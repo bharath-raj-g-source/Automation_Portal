@@ -1,4 +1,4 @@
-# Build a Complete Project Management Dashboard
+<!-- # Build a Complete Project Management Dashboard
 
 [![Tutorial Video](https://img.youtube.com/vi/KAV8vo7hGAo/0.jpg)](https://www.youtube.com/watch?v=KAV8vo7hGAo)
 
@@ -77,4 +77,4 @@ Ensure you have these tools installed:
 - Command for resetting ID in database:
   ```sql
   SELECT setval(pg_get_serial_sequence('"[DATA_MODEL_NAME_HERE]"', 'id'), coalesce(max(id)+1, 1), false) FROM "[DATA_MODEL_NAME_HERE]";
-  ```
+  ``` -->
