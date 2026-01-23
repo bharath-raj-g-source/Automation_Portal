@@ -14,7 +14,9 @@ type Props = {
 
 const Project = ({ params }: Props) => {
   const { id } = params;
-  const [activeTab, setActiveTab] = useState("Board");
+  
+  // 1. Update the default state to "General QC" (was "Board")
+  const [activeTab, setActiveTab] = useState("Sport Specific QC");
   const [isModalNewTaskOpen, setIsModalNewTaskOpen] = useState(false);
 
   return (
@@ -25,16 +27,22 @@ const Project = ({ params }: Props) => {
         id={id}
       />
       <ProjectHeader activeTab={activeTab} setActiveTab={setActiveTab} />
-      {activeTab === "Board" && (
+      
+      {/* 2. Update the conditions to match the new Tab names */}
+      
+      {activeTab === "General QC" && (
         <Board id={id} setIsModalNewTaskOpen={setIsModalNewTaskOpen} />
       )}
-      {activeTab === "List" && (
+      
+      {activeTab === "Sport Specific QC" && (
         <List id={id} setIsModalNewTaskOpen={setIsModalNewTaskOpen} />
       )}
-      {activeTab === "Timeline" && (
+      
+      {activeTab === "Estimations" && (
         <Timeline id={id} setIsModalNewTaskOpen={setIsModalNewTaskOpen} />
       )}
-      {activeTab === "Table" && (
+      
+      {activeTab === "Rates and Rating" && (
         <Table id={id} setIsModalNewTaskOpen={setIsModalNewTaskOpen} />
       )}
     </div>

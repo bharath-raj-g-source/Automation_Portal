@@ -27,13 +27,13 @@ const ProjectHeader = ({ activeTab, setActiveTab }: Props) => {
       />
       <div className="pb-6 pt-6 lg:pb-4 lg:pt-8">
         <Header
-          name="Product Design Development"
+          name="Sports QC Automation"
           buttonComponent={
             <button
               className="flex items-center rounded-md bg-blue-primary px-3 py-2 text-white hover:bg-blue-600"
               onClick={() => setIsModalNewProjectOpen(true)}
             >
-              <PlusSquare className="mr-2 h-5 w-5" /> New Boards
+              <PlusSquare className="mr-2 h-5 w-5" /> New
             </button>
           }
         />
@@ -42,30 +42,34 @@ const ProjectHeader = ({ activeTab, setActiveTab }: Props) => {
       {/* TABS */}
       <div className="flex flex-wrap-reverse gap-2 border-y border-gray-200 pb-[8px] pt-2 dark:border-stroke-dark md:items-center">
         <div className="flex flex-1 items-center gap-2 md:gap-4">
-          <TabButton
-            name="Board"
+          {/* 1. Replaced "Board" with "General QC" */}
+          {/* <TabButton
+            name="General QC"
             icon={<Grid3x3 className="h-5 w-5" />}
             setActiveTab={setActiveTab}
             activeTab={activeTab}
-          />
+          /> */}
+          {/* 2. Replaced "List" with "Sport Specific QC" */}
           <TabButton
-            name="List"
+            name="Sport Specific QC"
             icon={<List className="h-5 w-5" />}
             setActiveTab={setActiveTab}
             activeTab={activeTab}
           />
-          <TabButton
-            name="Timeline"
+          {/* 3. Replaced "Timeline" with "Estimations" */}
+          {/* <TabButton
+            name="Estimations"
             icon={<Clock className="h-5 w-5" />}
             setActiveTab={setActiveTab}
             activeTab={activeTab}
-          />
-          <TabButton
-            name="Table"
+          /> */}
+          {/* 4. Replaced "Table" with "Rates and Rating" */}
+          {/* <TabButton
+            name="Rates and Rating"
             icon={<Table className="h-5 w-5" />}
             setActiveTab={setActiveTab}
             activeTab={activeTab}
-          />
+          /> */}
         </div>
         <div className="flex items-center gap-2">
           <button className="text-gray-500 hover:text-gray-600 dark:text-neutral-500 dark:hover:text-gray-300">

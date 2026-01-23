@@ -99,7 +99,7 @@ DUMMY_PROJECTS: List[Project] = [
     Project.model_validate({"id": 3, "name": "Cricket", "description": "A project to boost renewable energy use.", "startDate": "2023-03-05T00:00:00Z", "endDate": "2024-03-05T00:00:00Z"}),
     Project.model_validate({"id": 4, "name": "Tennis", "description": "Tennis project for new software development techniques.", "startDate": "2023-01-20T00:00:00Z", "endDate": "2023-09-20T00:00:00Z"}),
     Project.model_validate({"id": 5, "name": "Echo", "description": "Echo project focused on AI advancements.", "startDate": "2023-04-15T00:00:00Z", "endDate": "2023-11-30T00:00:00Z"}),
-    Project.model_validate({"id": 6, "name": "Foot Ball", "description": "Exploring cutting-edge biotechnology.", "startDate": "2023-02-25T00:00:00Z", "endDate": "2023-08-25T00:00:00Z"}),
+    Project.model_validate({"id": 6, "name": "Foot Ball 1", "description": "Exploring cutting-edge biotechnology.", "startDate": "2023-02-25T00:00:00Z", "endDate": "2023-08-25T00:00:00Z"}),
     Project.model_validate({"id": 7, "name": "Golf", "description": "Development of new golf equipment using AI.", "startDate": "2023-05-10T00:00:00Z", "endDate": "2023-12-10T00:00:00Z"}),
     Project.model_validate({"id": 8, "name": "Hockey", "description": "Hockey management system overhaul.", "startDate": "2023-03-01T00:00:00Z", "endDate": "2024-01-01T00:00:00Z"}),
     Project.model_validate({"id": 9, "name": "India", "description": "Telecommunication infrastructure upgrade.", "startDate": "2023-06-01T00:00:00Z", "endDate": "2023-12-01T00:00:00Z"}),

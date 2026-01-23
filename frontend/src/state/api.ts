@@ -233,6 +233,16 @@ export const api = createApi({
       invalidatesTags: ["QcResults"], 
     }),
 
+    runQcChecks1: build.mutation<QcRunResponse, FormData>({
+      query: (formData) => ({
+        url: "qc/run_qc1", 
+        method: "POST",
+        body: formData,
+        responseHandler: (response) => response.blob(),
+      }),
+      invalidatesTags: ["QcResults"], 
+    }),
+
     runMarketChecks: build.mutation<QcRunResponse, FormData>({
         query: (formData) => ({
             url: "qc/market_check_and_process", // The target URL
@@ -268,6 +278,7 @@ export const {
   useGetAuthUserQuery,
   // 💡 NEW EXPORTS
   useRunQcChecksMutation,
+  useRunQcChecks1Mutation,
   useRunMarketChecksMutation, // 💡 NEW EXPORT
   useUploadFileMutation,
 } = api;

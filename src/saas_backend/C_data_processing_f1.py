@@ -37,7 +37,7 @@ class BSRValidator:
     DATE_COLUMN = 'Date'
     SESSION_COMPETITION_COLUMN = 'Competition'
 
-    def __init__(self, bsr_path: str , obligation_path: str = None, overnight_path: str = None):
+    def __init__(self, bsr_path: str , obligation_path: str = None, overnight_path: str = None, macro_path: str = None):
         self.bsr_path = bsr_path
         self.df = self._load_bsr()
 
@@ -47,6 +47,11 @@ class BSRValidator:
 
         # NEW: Store the overnight path
         self.overnight_path = overnight_path # <-- STORED HERE
+
+        self.macro_path = macro_path
+
+        # 🚨 NEW: Load and store the duplication rules DataFrame
+        self.dup_rules_df = self._load_and_filter_macro_rules()
         
         # Dictionary to map market check keys to internal methods (to be implemented)
         self.market_check_map = {
@@ -66,6 +71,9 @@ class BSRValidator:
             "check_session_completeness": self._check_session_completeness,
 
             "update_audience_from_overnight": self._update_audience_from_overnight, # <-- NEW
+            
+            "dup_channel_existence": self._validate_dup_channel_existence, # <-- ADDED
+           
 
             # 2. Broadcaster/Platform Coverage
             "check_youtube_global": self._add_youtube_pan_global,
@@ -89,7 +97,204 @@ class BSRValidator:
             "recreate_viaplay": self._recreate_viaplay,
             "recreate_disney_latam": self._recreate_disney_latam,
         }
-    
+
+    def normalize_channel_name(self ,channel_series):
+        """
+        Removes regional codes, parentheses, suffixes, and numbers to compare channels 
+        by their core brand identity (e.g., ESPN, Sky).
+        """
+        normalized = channel_series.astype(str).str.strip().str.upper()
+        normalized = normalized.str.replace(r'\s*\([^)]*\)', '', regex=True)
+        normalized = normalized.str.replace(
+            r'(\s+ARG|\s+BOL|\s+CHL|\s+PER|\s+SWE|\s+DE|\s+AFR|\s+PCA|\s+COL|\s+ECU|\s+URY|\s+MEX|\s+JPN|\s+LTU|\s+CHE|\s+FRA)', 
+            '', 
+            flags=re.IGNORECASE, 
+            regex=True
+        )
+        # normalized = normalized.str.replace(
+        #     r'(\s+\d+|F1|360|MAXIMO|NEWS|TOP EVENT|PREMIER LEAGUE|LALIGA|CRICKET|FOOTBALL|GOLF|GRANDSTAND|MOTORSPORT|RUGBY|TENNIS|VARIETY|WWE|RED BUTTON|MAIN EVENT|SHOWCASE|MIX|ACTION|FOOT|LIVE|\s+4K|\s+INFO)', 
+        #     '', 
+        #     flags=re.IGNORECASE, 
+        #     regex=True
+        # )
+        # normalized = normalized.str.replace(r'\s+SPORT[S]*', '', regex=True)
+        # normalized = normalized.str.replace(r'\s+TV', '', regex=True)
+        # normalized = normalized.str.replace(r'\s{2,}', ' ', regex=True).str.strip()
+        # normalized = normalized.str.replace(r'\s+', '', regex=True).str.strip()
+        # normalized = normalized.str.replace(r'[\s\+]+', '', regex=True).str.strip()
+        return normalized
+
+# --- NEW HELPER METHOD: Load and Filter Macro Rules ---
+    def _load_and_filter_macro_rules(self):
+        """Loads, filters, and standardizes the macro duplication rules file."""
+        if not self.macro_path:
+            return None
+            
+        MACRO_SHEET_NAME = "Data Core"
+        MACRO_HEADER_INDEX = 1 
+        SEARCH_TERM = "Formula 1"
+        REQUIRED_RULE_COLS = ['Orig Market', 'Dup Market', 'Dup Channel', 'Projects'] # Include Projects for initial filtering
+
+        try:
+            # NOTE: Assumes self.macro_path is set in __init__
+            df_macro = pd.read_excel(self.macro_path, sheet_name=MACRO_SHEET_NAME, header=MACRO_HEADER_INDEX)
+            df_macro.columns = [str(c).strip() for c in df_macro.columns]
+
+            filtered_df = df_macro[
+                df_macro['Projects'].astype(str).str.contains(SEARCH_TERM, case=False, na=False)
+            ].copy()
+            
+            # Select and clean required columns
+            df_dup_rules = filtered_df[['Orig Market', 'Dup Market', 'Dup Channel']].copy()
+
+            # Ensure all key columns are clean strings (strip, upper case)
+            for col in ['Orig Market', 'Dup Market', 'Dup Channel']:
+                if col in df_dup_rules.columns:
+                    df_dup_rules[col] = df_dup_rules[col].astype(str).str.strip().str.upper()
+                    
+            return df_dup_rules
+        
+        except Exception as e:
+            print(f"Error loading duplication rules from macro file: {e}")
+            return None
+
+
+    def _load_and_filter_macro_rules(self):
+        """Loads, filters, and standardizes the macro duplication rules file."""
+        if not self.macro_path:
+            return None
+            
+        MACRO_SHEET_NAME = "Data Core"
+        MACRO_HEADER_INDEX = 1 
+        SEARCH_TERM = "Formula 1"
+        REQUIRED_RULE_COLS = ['Orig Market', 'Dup Market', 'Dup Channel', 'Projects'] # Include Projects for filtering
+
+        try:
+            df_macro = pd.read_excel(self.macro_path, sheet_name=MACRO_SHEET_NAME, header=MACRO_HEADER_INDEX)
+            df_macro.columns = [str(c).strip() for c in df_macro.columns]
+
+            # 1. Filter by Project (Formula 1)
+            filtered_df = df_macro[
+                df_macro['Projects'].astype(str).str.contains(SEARCH_TERM, case=False, na=False)
+            ].copy()
+            
+            # 2. Select and clean required columns
+            df_dup_rules = filtered_df[REQUIRED_RULE_COLS].copy()
+
+            # Ensure key columns are clean strings (strip, upper case)
+            for col in ['Orig Market', 'Dup Market', 'Dup Channel']:
+                if col in df_dup_rules.columns:
+                    df_dup_rules[col] = df_dup_rules[col].astype(str).str.strip().str.upper()
+                    
+            # We only need 'Orig Market', 'Dup Market', 'Dup Channel' for the validation check
+            return df_dup_rules[['Orig Market', 'Dup Market', 'Dup Channel']].drop_duplicates()
+        
+        except Exception as e:
+            print(f"Error loading duplication rules from macro file: {e}")
+            return None
+
+    def _validate_dup_channel_existence(self) -> Dict[str, Any]:
+        """
+        Checks if every 'Dup Channel' required by the Duplication Rules is actually present 
+        in the list of 'TV-Channel's within the corresponding 'Dup Market' of the BSR.
+        Reports the full list of missing channels for each market pair.
+        """
+        initial_rows = len(self.df)
+        FLAG_COLUMN = 'QC_Dup_Channel_Existence_Flag'
+        REQUIRED_BSR_COLS = ['Market', 'TV-Channel']
+        REQUIRED_RULE_COLS = ['Orig Market', 'Dup Market', 'Dup Channel'] 
+
+        # 1. Initialization and Checks
+        self.df[FLAG_COLUMN] = 'OK'
+        df_dup_rules = self.dup_rules_df # Access the stored rules DF
+
+        if df_dup_rules is None or df_dup_rules.empty or \
+        not all(col in self.df.columns for col in REQUIRED_BSR_COLS):
+            return {
+                "check_key": "dup_channel_existence", "status": "Skipped",
+                "action": "Duplication Channel Check",
+                "description": "Skipped: Missing Macro Rules file or required BSR columns.",
+                "details": {"rows_flagged": 0}
+            }
+        
+        # 2. Data Preparation for Efficient Lookup (BSR)
+        
+        bsr_df_check = self.df[['Market', 'TV-Channel']].copy()
+        bsr_df_check['Market_Norm'] = bsr_df_check['Market'].astype(str).str.strip().str.upper()
+        
+        # Apply normalization to BSR channels for the lookup map values
+        bsr_df_check['TV-Channel_Norm'] = self.normalize_channel_name(bsr_df_check['TV-Channel'])
+        
+        # Create a dictionary for quick lookup of existing channels in the BSR:
+        existing_channels_map = bsr_df_check.groupby('Market_Norm')['TV-Channel_Norm'].apply(set).to_dict()
+        orig_channel_count_map = bsr_df_check.groupby('Market_Norm')['TV-Channel_Norm'].nunique().to_dict()
+
+        # 3. Aggregate Rules and Prepare for Validation
+        
+        missing_channels_log = []
+        
+        # Group rules by the (Orig Market, Dup Market) pair
+        rules_grouped = df_dup_rules.groupby(['Orig Market', 'Dup Market'])
+        
+        # Apply normalization to the REQUIRED channel name from the rule sheet
+        df_dup_rules['Required_Channel_Norm'] = self.normalize_channel_name(df_dup_rules['Dup Channel'])
+        
+        rows_flagged = 0
+        
+        # Iterate over each unique (Source Market, Target Market) pair
+        for (orig_market_raw, dup_market_raw), group in rules_grouped:
+            
+            orig_market = orig_market_raw.upper().strip()
+            dup_market = dup_market_raw.upper().strip()
+            
+            required_channels_set = set(group['Required_Channel_Norm'].unique())
+            existing_channels = existing_channels_map.get(dup_market, set())
+            
+            missing_channels = required_channels_set.difference(existing_channels)
+            
+            # 4. Validation Check and Logging
+            if missing_channels:
+                
+                # Log the specific failure reason
+                missing_channels_log.append({
+                    "Orig_Market": orig_market_raw,
+                    "Dup_Market": dup_market_raw, 
+                    "Orig_Channel_Count": orig_channel_count_map.get(orig_market, 0),
+                    "Dup_Channel_Exist_Count": len(existing_channels),
+                    "Missing_Channels_Count": len(missing_channels),
+                    "Missing_Channels_List": sorted(list(missing_channels))
+                })
+                
+                # 5. Apply Flag to the BSR
+                # Format the flag message with the comprehensive list
+                missing_list_str = "; ".join(sorted(list(missing_channels)))
+                flag_message = f"Completeness Error: {len(missing_channels)} Channel(s) missing. Required: [{missing_list_str}] (Source: {orig_market_raw})."
+                
+                # Flag ALL rows in the target Dup Market (since the issue is market-wide completeness)
+                flag_mask = (self.df['Market'].astype(str).str.strip().str.upper() == dup_market)
+                
+                # Only flag rows that were not already flagged
+                current_flags = self.df.loc[flag_mask, FLAG_COLUMN]
+                rows_to_flag = flag_mask & (current_flags == 'OK')
+                
+                self.df.loc[rows_to_flag, FLAG_COLUMN] = flag_message
+                rows_flagged += rows_to_flag.sum()
+
+
+        final_status = "Completed" if rows_flagged == 0 else "Flagged"
+
+        return {
+            "check_key": "dup_channel_existence",
+            "status": final_status,
+            "action": "Duplication Channel Check",
+            "description": f"Checked Duplication rules. Flagged {rows_flagged} rows in markets missing required channels.",
+            "details": {
+                "rows_flagged": int(rows_flagged),
+                "missing_market_pairs_count": len(missing_channels_log),
+                "missing_market_details": missing_channels_log
+            }
+        }
+
     # --- Private Loading/Parsing Methods (from old qc_checks.py) ---
     def _load_overnight_data(self):
         """
