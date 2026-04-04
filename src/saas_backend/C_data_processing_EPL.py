@@ -6,7 +6,6 @@ from openpyxl.styles import PatternFill
 from openpyxl.utils.dataframe import dataframe_to_rows
 from io import BytesIO 
 from pandas.api.types import is_object_dtype, is_categorical_dtype, CategoricalDtype 
-from fuzzywuzzy import fuzz
 from datetime import datetime, timedelta
 import numpy as np
 from datetime import timedelta
@@ -104,6 +103,7 @@ class EPLValidator:
         self.market_check_map = {
         "impute_lt_live_status": self._impute_lt_live_status,
         "consolidate_gillete_soccer": self._consolidate_gillette_soccer_programs,
+        "consolidate_soccer_sunday": self._consolidate_soccer_sunday_programs,
         "check_sky_showcase_live": self._check_sky_showcase_live_status,
         "standardize_uk_ire_region": self._standardize_uk_ire_region,
         "check_fixture_vs_case" : self._check_fixture_vs_case,
@@ -546,25 +546,26 @@ class EPLValidator:
     # 2
     def _consolidate_gillette_soccer_programs(self) -> Dict[str, Any]:
         """
-        Identifies sequential 'Gillete Soccer' programs where the gap between the 
+        Identifies sequential 'Gillette Soccer' programs where the gap between the 
         End Time of the first and the Start Time of the second is 30 minutes or less.
-        
-        RESTRICTION: Applies ONLY to 'United Kingdom' and 'Ireland' markets.
-        The second, later row is flagged for consolidation with a reference to the preceding row.
         """
         initial_rows = len(self.df)
         FLAG_COLUMN = 'QC_Consolidate_Gillete_Soccer'
         
-        # --- ACCESS CONFIGURATION (or use defaults) ---
-        # Using internal defaults here based on the prompt, but can use self.config if preferred
-        KEYWORD = "GILLETE SOCCER"
+        # 🛡️ THE FIX: Create an untouchable unique ID for every row
+        self.df['Temp_Row_ID'] = range(len(self.df))
+        
+        # --- ACCESS CONFIGURATION ---
+        KEYWORD = "GILLETTE SOCCER"
         MAX_GAP_MINUTES = 30
-        TARGET_MARKETS = ['UNITED KINGDOM', 'UK', 'IRELAND'] # <--- NEW RESTRICTION
+        TARGET_MARKETS = ['UNITED KINGDOM', 'UK', 'IRELAND']
 
         REQUIRED_COLS = ['Combined', 'Date', 'Start', 'End', 'Market', 'TV-Channel']
         if not all(col in self.df.columns for col in REQUIRED_COLS):
+            self.df.drop(columns=['Temp_Row_ID'], inplace=True, errors='ignore')
             return {
-                "check_key": "consolidate_gillete_soccer", "status": "Skipped",
+                "check_key": "consolidate_gillete_soccer", 
+                "status": "Skipped",
                 "action": "Program Consolidation Check", 
                 "description": "Skipped: Missing required BSR columns.",
                 "details": {"rows_flagged": 0}
@@ -574,82 +575,88 @@ class EPLValidator:
         
         # 1. Prepare Data & Timestamps
         try:
-            # Normalize columns for filtering
+            # Normalize strings (regex=False used later for safety)
             combined_norm = self.df['Combined'].astype(str).str.upper()
+            
+            # Clean grouping variables perfectly
             market_norm = self.df['Market'].astype(str).str.strip().str.upper()
+            tv_channel_norm = self.df['TV-Channel'].astype(str).str.strip().str.upper()
             
-            # Create robust datetime objects
-            date_key = self.df['Date'].astype(str).str[:10]
-            self.df['Start_DT'] = pd.to_datetime(date_key + ' ' + self.df['Start'].astype(str), errors='coerce')
+            # Extract pure date and time strings
+            date_key = self.df['Date'].astype(str).str.strip().str[:10]
+            start_time_str = self.df['Start'].astype(str).str.strip().str.split().str[-1]
+            end_time_str = self.df['End'].astype(str).str.strip().str.split().str[-1]
             
-            # Adjust End_DT for midnight crossover
-            end_times = self.df['End'].astype(str)
-            base_end_dt = pd.to_datetime(date_key + ' ' + end_times, errors='coerce')
+            # Build datetime (letting pandas infer YYYY-MM-DD gracefully)
+            self.df['Start_DT'] = pd.to_datetime(date_key + ' ' + start_time_str, errors='coerce')
+            base_end_dt = pd.to_datetime(date_key + ' ' + end_time_str, errors='coerce')
+            
+            # Midnight crossover logic
             rollover_mask = (base_end_dt < self.df['Start_DT']) & base_end_dt.notna()
-            base_end_dt.loc[rollover_mask] += timedelta(days=1)
+            base_end_dt.loc[rollover_mask] += pd.Timedelta(days=1)
             self.df['End_DT'] = base_end_dt
             
         except Exception as e:
+            self.df.drop(columns=['Start_DT', 'End_DT', 'Temp_Row_ID'], inplace=True, errors='ignore')
             return {
-                "check_key": "consolidate_gillete_soccer", "status": "Failed",
+                "check_key": "consolidate_gillete_soccer", 
+                "status": "Failed",
                 "action": "Program Consolidation Check", 
                 "description": f"Failed to parse Date/Time columns: {e}",
                 "details": {"rows_flagged": 0}
             }
 
         # 2. Create Filters
-        # Filter A: Keyword Match
-        gillete_mask = combined_norm.str.contains(re.escape(KEYWORD), na=False)
-        
-        # Filter B: Market Match (UK or Ireland) <--- NEW
+        # 🛡️ THE FIX: regex=False stops regex engines from skipping valid matches
+        gillete_mask = combined_norm.str.contains(KEYWORD, regex=False, na=False)
         market_mask = market_norm.isin(TARGET_MARKETS)
-        
-        # Filter C: Valid Times
         valid_time_mask = self.df['Start_DT'].notna() & self.df['End_DT'].notna()
 
         # 3. Filter and Sort Candidates
-        # Combine all masks to select rows
         df_candidates = self.df[gillete_mask & market_mask & valid_time_mask].copy()
         
-        df_candidates['Original_Index'] = df_candidates.index
-        GROUP_COLS = ['Market', 'TV-Channel']
+        # Apply the normalized channel to candidates to guarantee clean grouping
+        df_candidates['Group_Channel'] = tv_channel_norm[gillete_mask & market_mask & valid_time_mask]
         
-        # Sort globally by grouping cols and time to ensure correct sequence
+        GROUP_COLS = ['Market', 'Group_Channel']
         df_candidates = df_candidates.sort_values(by=GROUP_COLS + ['Start_DT'])
 
         # 4. Perform Sequential Gap Check
         complex_flags = {}
         
         for _, group in df_candidates.groupby(GROUP_COLS):
-            # Calculate gap: Start of Current - End of Previous
-            time_gap = (group['Start_DT'] - group['End_DT'].shift(1)) / timedelta(minutes=1)
+            # Calculate gap in minutes safely
+            time_diff = group['Start_DT'] - group['End_DT'].shift(1)
+            time_gap = time_diff.dt.total_seconds() / 60.0
             
-            preceding_original_indices = group['Original_Index'].shift(1)
-            
-            # Identify consolidation candidates (gap is positive but small)
             consolidation_mask = (time_gap <= MAX_GAP_MINUTES) & (time_gap >= 0)
             
-            indices_now = group[consolidation_mask]['Original_Index']
-            preceding_indices = group['Original_Index'].shift(1)[consolidation_mask]
+            # Use our untouchable IDs
+            indices_now = group[consolidation_mask]['Temp_Row_ID']
+            preceding_indices = group['Temp_Row_ID'].shift(1)[consolidation_mask]
 
-            # Construct detailed flags
-            for curr_idx, prev_idx in zip(indices_now, preceding_indices):
-                # Use .iloc[0] on the looked-up value to ensure we get a scalar string
-                prev_start_val = self.df.loc[prev_idx, 'Start']
+            for curr_id, prev_id in zip(indices_now, preceding_indices):
+                curr_id = int(curr_id)
+                prev_id = int(prev_id)
+                
+                # Fetch previous row's start time via our custom ID
+                prev_row = self.df[self.df['Temp_Row_ID'] == prev_id].iloc[0]
+                prev_start_val = prev_row['Start']
                 
                 msg = (f"Consolidate with program starting at {prev_start_val} "
-                       f"(Original Index: {int(prev_idx)}, Gap <= {MAX_GAP_MINUTES}min)")
-                complex_flags[curr_idx] = msg
+                       f"(Gap <= {MAX_GAP_MINUTES}min)")
+                complex_flags[curr_id] = msg
 
         rows_flagged = len(complex_flags)
         
-        # 5. Apply Flag to Original DataFrame
+        # 5. Apply Flag directly to Temp_Row_ID (Index-Agnostic mapping)
         if rows_flagged > 0:
-            flag_series = pd.Series(complex_flags)
-            self.df.loc[flag_series.index, FLAG_COLUMN] = flag_series
+            flag_map = pd.Series(complex_flags)
+            mapped_flags = self.df['Temp_Row_ID'].map(flag_map)
+            self.df.loc[mapped_flags.notna(), FLAG_COLUMN] = mapped_flags
 
-        # Final cleanup
-        self.df.drop(columns=['Start_DT', 'End_DT'], inplace=True, errors='ignore')
+        # Final cleanup to keep dataframe spotless
+        self.df.drop(columns=['Start_DT', 'End_DT', 'Temp_Row_ID'], inplace=True, errors='ignore')
 
         return {
             "check_key": "consolidate_gillete_soccer",
@@ -918,125 +925,136 @@ class EPLValidator:
             }
         }
     # 7 change this to soccer sunday
-    # def _consolidate_gillette_soccer_programs(self) -> Dict[str, Any]:
-        # """
-        # Identifies sequential 'Gillete Soccer' programs where the gap between the 
-        # End Time of the first and the Start Time of the second is 30 minutes or less.
+    def _consolidate_soccer_sunday_programs(self) -> Dict[str, Any]:
+        """
+        Identifies sequential 'Soccer Sunday' programs where the gap between the 
+        End Time of the first and the Start Time of the second is 30 minutes or less.
         
-        # RESTRICTION: Applies ONLY to 'United Kingdom' and 'Ireland' markets.
-        # The second, later row is flagged for consolidation with a reference to the preceding row.
-        # """
-        # initial_rows = len(self.df)
-        # FLAG_COLUMN = 'QC_Consolidate_Gillete_Soccer'
+        RESTRICTION: Applies ONLY to 'United Kingdom' and 'Ireland' markets.
+        The second, later row is flagged for consolidation with a reference to the preceding row.
+        """
+        initial_rows = len(self.df)
+        FLAG_COLUMN = 'QC_Consolidate_Soccer_Sunday'
         
-        # # --- ACCESS CONFIGURATION (or use defaults) ---
-        # # Using internal defaults here based on the prompt, but can use self.config if preferred
-        # KEYWORD = "GILLETE SOCCER"
-        # MAX_GAP_MINUTES = 30
-        # TARGET_MARKETS = ['UNITED KINGDOM', 'UK', 'IRELAND'] # <--- NEW RESTRICTION
+        # 🛡️ THE FIX: Create an untouchable unique ID for every row
+        self.df['Temp_Row_ID'] = range(len(self.df))
+        
+        # --- CONFIGURATION ---
+        KEYWORD = "SOCCER SUNDAY"
+        MAX_GAP_MINUTES = 30
+        TARGET_MARKETS = ['UNITED KINGDOM', 'UK', 'IRELAND']
 
-        # REQUIRED_COLS = ['Combined', 'Date', 'Start', 'End', 'Market', 'TV-Channel']
-        # if not all(col in self.df.columns for col in REQUIRED_COLS):
-        #     return {
-        #         "check_key": "consolidate_gillete_soccer", "status": "Skipped",
-        #         "action": "Program Consolidation Check", 
-        #         "description": "Skipped: Missing required BSR columns.",
-        #         "details": {"rows_flagged": 0}
-        #     }
+        REQUIRED_COLS = ['Combined', 'Date', 'Start', 'End', 'Market', 'TV-Channel']
+        if not all(col in self.df.columns for col in REQUIRED_COLS):
+            self.df.drop(columns=['Temp_Row_ID'], inplace=True, errors='ignore')
+            return {
+                "check_key": "consolidate_soccer_sunday", 
+                "status": "Skipped",
+                "action": "Program Consolidation Check", 
+                "description": "Skipped: Missing required BSR columns.",
+                "details": {"rows_flagged": 0}
+            }
 
-        # self.df[FLAG_COLUMN] = 'OK'
+        self.df[FLAG_COLUMN] = 'OK'
         
-        # # 1. Prepare Data & Timestamps
-        # try:
-        #     # Normalize columns for filtering
-        #     combined_norm = self.df['Combined'].astype(str).str.upper()
-        #     market_norm = self.df['Market'].astype(str).str.strip().str.upper()
+        # 1. Prepare Data & Timestamps
+        try:
+            # Normalize strings
+            combined_norm = self.df['Combined'].astype(str).str.upper()
             
-        #     # Create robust datetime objects
-        #     date_key = self.df['Date'].astype(str).str[:10]
-        #     self.df['Start_DT'] = pd.to_datetime(date_key + ' ' + self.df['Start'].astype(str), errors='coerce')
+            # Clean grouping variables perfectly (stripping hidden spaces)
+            market_norm = self.df['Market'].astype(str).str.strip().str.upper()
+            tv_channel_norm = self.df['TV-Channel'].astype(str).str.strip().str.upper()
             
-        #     # Adjust End_DT for midnight crossover
-        #     end_times = self.df['End'].astype(str)
-        #     base_end_dt = pd.to_datetime(date_key + ' ' + end_times, errors='coerce')
-        #     rollover_mask = (base_end_dt < self.df['Start_DT']) & base_end_dt.notna()
-        #     base_end_dt.loc[rollover_mask] += timedelta(days=1)
-        #     self.df['End_DT'] = base_end_dt
+            # Extract pure date and time strings (destroys Excel dummy dates)
+            date_key = self.df['Date'].astype(str).str.strip().str[:10]
+            start_time_str = self.df['Start'].astype(str).str.strip().str.split().str[-1]
+            end_time_str = self.df['End'].astype(str).str.strip().str.split().str[-1]
             
-        # except Exception as e:
-        #     return {
-        #         "check_key": "consolidate_gillete_soccer", "status": "Failed",
-        #         "action": "Program Consolidation Check", 
-        #         "description": f"Failed to parse Date/Time columns: {e}",
-        #         "details": {"rows_flagged": 0}
-        #     }
+            # Build datetime with dayfirst=True for European dates
+            self.df['Start_DT'] = pd.to_datetime(date_key + ' ' + start_time_str, errors='coerce', dayfirst=True)
+            base_end_dt = pd.to_datetime(date_key + ' ' + end_time_str, errors='coerce', dayfirst=True)
+            
+            # Midnight crossover logic
+            rollover_mask = (base_end_dt < self.df['Start_DT']) & base_end_dt.notna()
+            base_end_dt.loc[rollover_mask] += pd.Timedelta(days=1)
+            self.df['End_DT'] = base_end_dt
+            
+        except Exception as e:
+            self.df.drop(columns=['Start_DT', 'End_DT', 'Temp_Row_ID'], inplace=True, errors='ignore')
+            return {
+                "check_key": "consolidate_soccer_sunday", 
+                "status": "Failed",
+                "action": "Program Consolidation Check", 
+                "description": f"Failed to parse Date/Time columns: {e}",
+                "details": {"rows_flagged": 0}
+            }
 
-        # # 2. Create Filters
-        # # Filter A: Keyword Match
-        # gillete_mask = combined_norm.str.contains(re.escape(KEYWORD), na=False)
-        
-        # # Filter B: Market Match (UK or Ireland) <--- NEW
-        # market_mask = market_norm.isin(TARGET_MARKETS)
-        
-        # # Filter C: Valid Times
-        # valid_time_mask = self.df['Start_DT'].notna() & self.df['End_DT'].notna()
+        # 2. Create Filters
+        # Use regex=False to prevent engine misinterpretations
+        soccer_sunday_mask = combined_norm.str.contains(KEYWORD, regex=False, na=False)
+        market_mask = market_norm.isin(TARGET_MARKETS)
+        valid_time_mask = self.df['Start_DT'].notna() & self.df['End_DT'].notna()
 
-        # # 3. Filter and Sort Candidates
-        # # Combine all masks to select rows
-        # df_candidates = self.df[gillete_mask & market_mask & valid_time_mask].copy()
+        # 3. Filter and Sort Candidates
+        df_candidates = self.df[soccer_sunday_mask & market_mask & valid_time_mask].copy()
         
-        # df_candidates['Original_Index'] = df_candidates.index
-        # GROUP_COLS = ['Market', 'TV-Channel']
+        # Apply the normalized channel to candidates to guarantee clean grouping
+        df_candidates['Group_Channel'] = tv_channel_norm[soccer_sunday_mask & market_mask & valid_time_mask]
         
-        # # Sort globally by grouping cols and time to ensure correct sequence
-        # df_candidates = df_candidates.sort_values(by=GROUP_COLS + ['Start_DT'])
+        GROUP_COLS = ['Market', 'Group_Channel']
+        df_candidates = df_candidates.sort_values(by=GROUP_COLS + ['Start_DT'])
 
-        # # 4. Perform Sequential Gap Check
-        # complex_flags = {}
+        # 4. Perform Sequential Gap Check
+        complex_flags = {}
         
-        # for _, group in df_candidates.groupby(GROUP_COLS):
-        #     # Calculate gap: Start of Current - End of Previous
-        #     time_gap = (group['Start_DT'] - group['End_DT'].shift(1)) / timedelta(minutes=1)
+        for _, group in df_candidates.groupby(GROUP_COLS):
+            # Calculate gap in minutes safely
+            time_diff = group['Start_DT'] - group['End_DT'].shift(1)
+            time_gap = time_diff.dt.total_seconds() / 60.0
             
-        #     preceding_original_indices = group['Original_Index'].shift(1)
+            # Identify consolidation candidates
+            consolidation_mask = (time_gap <= MAX_GAP_MINUTES) & (time_gap >= 0)
             
-        #     # Identify consolidation candidates (gap is positive but small)
-        #     consolidation_mask = (time_gap <= MAX_GAP_MINUTES) & (time_gap >= 0)
-            
-        #     indices_now = group[consolidation_mask]['Original_Index']
-        #     preceding_indices = group['Original_Index'].shift(1)[consolidation_mask]
+            # Use our untouchable Temp_Row_IDs
+            indices_now = group[consolidation_mask]['Temp_Row_ID']
+            preceding_indices = group['Temp_Row_ID'].shift(1)[consolidation_mask]
 
-        #     # Construct detailed flags
-        #     for curr_idx, prev_idx in zip(indices_now, preceding_indices):
-        #         # Use .iloc[0] on the looked-up value to ensure we get a scalar string
-        #         prev_start_val = self.df.loc[prev_idx, 'Start']
+            for curr_id, prev_id in zip(indices_now, preceding_indices):
+                curr_id = int(curr_id)
+                prev_id = int(prev_id)
                 
-        #         msg = (f"Consolidate with program starting at {prev_start_val} "
-        #                f"(Original Index: {int(prev_idx)}, Gap <= {MAX_GAP_MINUTES}min)")
-        #         complex_flags[curr_idx] = msg
+                # Fetch previous row's start time via our custom ID
+                prev_row = self.df[self.df['Temp_Row_ID'] == prev_id].iloc[0]
+                prev_start_val = prev_row['Start']
+                
+                msg = (f"Consolidate with program starting at {prev_start_val} "
+                       f"(Gap <= {MAX_GAP_MINUTES}min)")
+                complex_flags[curr_id] = msg
 
-        # rows_flagged = len(complex_flags)
+        rows_flagged = len(complex_flags)
         
-        # # 5. Apply Flag to Original DataFrame
-        # if rows_flagged > 0:
-        #     flag_series = pd.Series(complex_flags)
-        #     self.df.loc[flag_series.index, FLAG_COLUMN] = flag_series
+        # 5. Apply Flag directly to Temp_Row_ID (Index-Agnostic mapping)
+        if rows_flagged > 0:
+            flag_map = pd.Series(complex_flags)
+            mapped_flags = self.df['Temp_Row_ID'].map(flag_map)
+            self.df.loc[mapped_flags.notna(), FLAG_COLUMN] = mapped_flags
 
-        # # Final cleanup
-        # self.df.drop(columns=['Start_DT', 'End_DT'], inplace=True, errors='ignore')
+        # Final cleanup to keep dataframe spotless
+        self.df.drop(columns=['Start_DT', 'End_DT', 'Temp_Row_ID'], inplace=True, errors='ignore')
 
-        # return {
-        #     "check_key": "consolidate_gillete_soccer",
-        #     "status": "Flagged" if rows_flagged > 0 else "Completed",
-        #     "action": "Program Consolidation Check", 
-        #     "description": f"Flagged {rows_flagged} sequential '{KEYWORD}' rows for consolidation in UK/Ireland (gap <= {MAX_GAP_MINUTES} min).",
-        #     "details": {
-        #         "rows_flagged": int(rows_flagged),
-        #         "max_gap_minutes": MAX_GAP_MINUTES,
-        #         "target_keyword": KEYWORD,
-        #         "target_markets": TARGET_MARKETS
-        #     }
-        # }
+        return {
+            "check_key": "consolidate_soccer_sunday",
+            "status": "Flagged" if rows_flagged > 0 else "Completed",
+            "action": "Program Consolidation Check", 
+            "description": f"Flagged {rows_flagged} sequential '{KEYWORD}' rows for consolidation in UK/Ireland (gap <= {MAX_GAP_MINUTES} min).",
+            "details": {
+                "rows_flagged": int(rows_flagged),
+                "max_gap_minutes": MAX_GAP_MINUTES,
+                "target_keyword": KEYWORD,
+                "target_markets": TARGET_MARKETS
+            }
+        }
     # 8
     def _standardize_uk_ire_region(self) -> Dict[str, Any]:
         """
@@ -1284,44 +1302,34 @@ class EPLValidator:
     def _audit_multi_match_status(self) -> Dict[str, Any]:
         """
         Audits Multi-Match content and Classification Codes.
-        
-        Logic:
-        1. Uses 'Combined' column exclusively for content checks.
-        2. Check A: If 'Combined' contains 'Goal Rush'/'Konferenz', 'Phase / Fixture / Episode Desc.' must have 'MULTIMATCH' tag.
-        3. Check B: If 'Combined' ends in 'NB' or 'VB', 'Type of program' must be 'Magazine & Support'.
-        4. Check C: If tagged 'MULTIMATCH', 'Type of program' must be 'Live' or 'Repeat'.
         """
+        # FIXED 1: Reset the index to prevent Pandas from silently crashing during .loc assignment
+        self.df = self.df.reset_index(drop=True)
+        
         initial_rows = len(self.df)
         FLAG_COLUMN = 'QC_Multi_Match_Audit_Flag'
         
         # --- Define Standard Column Keys ---
-        # We use internal variables for the column names we find
         COL_COMBINED = 'Combined'
         COL_FIXTURE = 'Phase / Fixture / Episode Desc.'
         COL_TYPE = 'Type of programme'
         
         # --- 1. Robust Column Selection ---
-        # Normalize existing columns map: {lowercase_stripped: original_name}
         col_map = {c.lower().strip(): c for c in self.df.columns}
         
         found_cols = {}
         
-        # A. Find 'Combined'
         if 'combined' in col_map:
             found_cols['Combined'] = col_map['combined']
         else:
-            # Fallback checks
             for c_lower, c_orig in col_map.items():
                 if 'combined' in c_lower:
                     found_cols['Combined'] = c_orig
                     break
         
-        # B. Find 'Phase / Fixture / Episode Desc.'
-        # This is a complex name, we look for distinct parts
         if 'phase / fixture / episode desc.' in col_map:
             found_cols['Fixture'] = col_map['phase / fixture / episode desc.']
         else:
-            # Look for columns containing "fixture" and "desc" or just "phase" and "fixture"
             for c_lower, c_orig in col_map.items():
                 if 'fixture' in c_lower and 'desc' in c_lower:
                     found_cols['Fixture'] = c_orig
@@ -1330,7 +1338,6 @@ class EPLValidator:
                     found_cols['Fixture'] = c_orig
                     break
 
-        # C. Find 'Type of programme' (Using the logic from the previous fix)
         potential_type_names = [
             'type of programme', 
             'type of program', 
@@ -1355,7 +1362,6 @@ class EPLValidator:
             found_cols['Type'] = found_type
 
         # --- Check Required Columns ---
-        # We need all three found to proceed
         missing_logical = []
         if 'Combined' not in found_cols: missing_logical.append("Combined")
         if 'Fixture' not in found_cols: missing_logical.append("Phase/Fixture/Episode")
@@ -1370,78 +1376,54 @@ class EPLValidator:
                 "details": {"rows_flagged": 0}
             }
 
-        # Assign resolved names to variables
         COMBINED_COL = found_cols['Combined']
         FIXTURE_DESC_COL = found_cols['Fixture']
         TYPE_COL = found_cols['Type']
 
         self.df[FLAG_COLUMN] = 'OK'
         
-        # Define keywords & Regex
         MULTI_MATCH_KEYWORDS = ['GOAL RUSH', 'KONFERENZ', 'CONFERENCE']
         VALID_MULTIMATCH_TYPES = ['LIVE', 'REPEAT']
         EXPECTED_FIXTURE_REGEX = r'MULTI[\s\-]*MATCH' 
         SUFFIX_REGEX = r'\s(NB|VB)$'  
 
         # --- 2. Prepare Data ---
-        # Normalize data for comparison
-        combined_norm = self.df[COMBINED_COL].astype(str).str.upper().fillna('')
-        fixture_desc_norm = self.df[FIXTURE_DESC_COL].astype(str).str.upper().fillna('')
+        # FIXED 2: Added .str.strip() so trailing spaces don't break the regex
+        combined_norm = self.df[COMBINED_COL].astype(str).str.upper().str.strip()
+        fixture_desc_norm = self.df[FIXTURE_DESC_COL].astype(str).str.upper().str.strip()
         type_norm = self.df[TYPE_COL].astype(str).str.strip().str.upper()
         
         # --- 3. Define Condition Masks ---
-        
-        # A: Combined contains Multi-Match Keyword (e.g., "Goal Rush")
         match_keyword_pattern = '|'.join([re.escape(k) for k in MULTI_MATCH_KEYWORDS])
         combined_has_keyword = combined_norm.str.contains(match_keyword_pattern, na=False)
         
-        # B: Fixture Column contains "MULTIMATCH" Tag
         tag_is_present = fixture_desc_norm.str.contains(EXPECTED_FIXTURE_REGEX, regex=True, na=False)
-        
-        # C: Combined ends with NB or VB
-        # This regex looks for whitespace + NB/VB + end of string
         ends_with_code = combined_norm.str.contains(SUFFIX_REGEX, regex=True, na=False)
         
-        # D: Type Checks
         type_is_live_repeat = type_norm.isin(VALID_MULTIMATCH_TYPES)
         type_is_magazine = type_norm == 'MAGAZINE & SUPPORT'
 
         # --- 4. Identify Errors ---
-        
-        # Error 1: MISSING MULTI-MATCH TAG
-        # Logic: If Combined has Keyword (Goal Rush) -> Must have MULTIMATCH tag.
-        # EXCEPTION: If it is a Magazine (NB/VB), it might be "Goal Rush NB" which is a support show.
         missing_tag_mask = (combined_has_keyword & ~ends_with_code) & (~tag_is_present)
-        
-        # Error 2: INVALID TYPE FOR NB/VB SUFFIX (The critical check requested)
-        # Logic: If Combined ends in NB or VB -> Type MUST be 'Magazine & Support'
         invalid_magazine_mask = ends_with_code & (~type_is_magazine)
-        
-        # Error 3: INVALID TYPE FOR MULTIMATCH TAG
-        # Logic: If explicitly tagged MULTIMATCH -> Type MUST be Live or Repeat
         invalid_multimatch_type_mask = tag_is_present & (~type_is_live_repeat)
 
         # --- 5. Apply Flags (Priority Order) ---
-        
-        # Apply Error 2 (NB/VB Type Mismatch) - High Priority
         if invalid_magazine_mask.any():
             msg = f"TYPE MISMATCH: Combined description ends in NB/VB, so '{TYPE_COL}' must be 'Magazine & Support'."
             rows_to_flag = invalid_magazine_mask & (self.df[FLAG_COLUMN] == 'OK')
             self.df.loc[rows_to_flag, FLAG_COLUMN] = msg
 
-        # Apply Error 1 (Missing Multi-Match Tag)
         if missing_tag_mask.any():
             msg = f"FIXTURE TAG MISSING: Content indicates Multi-Match, but '{FIXTURE_DESC_COL}' is missing 'MULTIMATCH' tag."
             rows_to_flag = missing_tag_mask & (self.df[FLAG_COLUMN] == 'OK')
             self.df.loc[rows_to_flag, FLAG_COLUMN] = msg
 
-        # Apply Error 3 (Invalid Multi-Match Type)
         if invalid_multimatch_type_mask.any():
             msg = f"INVALID TYPE: Item is tagged 'MULTIMATCH', but '{TYPE_COL}' is not Live or Repeat."
             rows_to_flag = invalid_multimatch_type_mask & (self.df[FLAG_COLUMN] == 'OK')
             self.df.loc[rows_to_flag, FLAG_COLUMN] = msg
 
-        # Recalculate total flagged
         total_flagged = (self.df[FLAG_COLUMN] != 'OK').sum()
 
         # 6. Final Summary

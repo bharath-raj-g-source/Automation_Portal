@@ -10,3 +10,6 @@ venv/
 src/saas_backend/venv/
 __pycache__/
 *.pyc
+
+.env
+.env.local

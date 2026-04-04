@@ -14,7 +14,6 @@ const Navbar = () => {
   );
   const isDarkMode = useAppSelector((state) => state.global.isDarkMode);
 
-  // const { data: currentUser } = useGetAuthUserQuery({});
   const { data: currentUser } = useGetAuthUserQuery();
   const handleSignOut = async () => {
     try {
@@ -28,8 +27,8 @@ const Navbar = () => {
   const currentUserDetails = currentUser?.userDetails;
 
   return (
-    <div className="flex items-center justify-between bg-white px-4 py-3 dark:bg-black">
-      {/* Search Bar */}
+    <div className="flex items-center justify-between bg-white px-4 py-3 dark:bg-black sticky top-0 z-50 shadow-md">
+      {/* LEFT SIDE: Logo & Search Bar */}
       <div className="flex items-center gap-8">
         {!isSidebarCollapsed ? null : (
           <button
@@ -38,17 +37,31 @@ const Navbar = () => {
             <Menu className="h-8 w-8 dark:text-white" />
           </button>
         )}
-        <div className="relative flex h-min w-[200px]">
+
+        {/* 1. NEW LOGO ADDED HERE */}
+        {/* Replace "/logo.png" with your actual file path in the public folder */}
+        <Image
+          src="/nielsen_sports.png" 
+          alt="Nielsen Sports"
+          width={160}
+          height={40}
+          priority
+          unoptimized={process.env.NODE_ENV === 'production'} 
+          className="cursor-pointer object-contain dark:invert"
+        />
+
+        {/* 2. SEARCH BAR MOVED HERE */}
+        {/* <div className="relative flex h-min w-[200px]">
           <Search className="absolute left-[4px] top-1/2 mr-2 h-5 w-5 -translate-y-1/2 transform cursor-pointer dark:text-white" />
           <input
             className="w-full rounded border-none bg-gray-100 p-2 pl-8 placeholder-gray-500 focus:border-transparent focus:outline-none dark:bg-gray-700 dark:text-white dark:placeholder-white"
             type="search"
             placeholder="Search..."
           />
-        </div>
+        </div> */}
       </div>
 
-      {/* Icons */}
+      {/* RIGHT SIDE: Icons & User */}
       <div className="flex items-center">
         <button
           onClick={() => dispatch(setIsDarkMode(!isDarkMode))}
@@ -72,7 +85,7 @@ const Navbar = () => {
               : `h-min w-min rounded p-2 hover:bg-gray-100`
           }
         >
-          <Settings className="h-6 w-6 cursor-pointer dark:text-white" />
+          {/* <Settings className="h-6 w-6 cursor-pointer dark:text-white" /> */}
         </Link>
         <div className="ml-2 mr-5 hidden min-h-[2em] w-[0.1rem] bg-gray-200 md:inline-block"></div>
         <div className="hidden items-center justify-between md:flex">
@@ -96,7 +109,7 @@ const Navbar = () => {
             className="hidden rounded bg-blue-400 px-4 py-2 text-xs font-bold text-white hover:bg-blue-500 md:block"
             onClick={handleSignOut}
           >
-            Sign out
+            Sign out 
           </button>
         </div>
       </div>

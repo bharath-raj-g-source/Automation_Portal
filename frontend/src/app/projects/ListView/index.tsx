@@ -759,8 +759,14 @@
 
 // export default ListView;
 
+"use client";
+
 import React, { useState, useEffect } from "react";
-import { Upload, X, CheckCircle, AlertTriangle, FileText, Loader, Download } from "lucide-react";
+import { 
+  UploadCloud, CheckCircle, AlertTriangle, FileText, 
+  Loader, Download, ShieldCheck, Database, Zap, FileSpreadsheet,
+  Activity, Settings2, CheckSquare, PanelLeftClose, PanelLeftOpen, X
+} from "lucide-react";
 import { useAppSelector } from "@/app/redux"; 
 import { dataGridClassNames, dataGridSxStyles } from "@/lib/utils"; 
 import { DataGrid, GridColDef } from "@mui/x-data-grid";
@@ -771,126 +777,129 @@ import {
   useGetProjectsQuery, 
   QcRunResponse 
 } from "@/state/api";
+import Image from "next/image";
 
 // ----------------------------------------------------------------------
-// 1. DEFINE CHECK LISTS (Configuration)
+// 1. DEFINE CHECK LISTS
 // ----------------------------------------------------------------------
 
-// --- ⚽ FOOTBALL (EPL) ---
-const footballChecks = [
-  // --- Original & Previous Keys ---
-  { key: "impute_lt_live_status", name: "L/T Keyword Live Override", type: "EPL" },
-  { key: "consolidate_gillete_soccer", name: "Gillette Soccer Consolidation", type: "EPL" },
-  { key: "check_sky_showcase_live", name: "Sky Showcase (UK) Repeat Check", type: "EPL" },
-  { key: "standardize_uk_ire_region", name: "UK/Europe Region Correction", type: "EPL" },
-  { key: "check_fixture_vs_case", name: "VS Case Sensitivity", type: "EPL" },
-  { key: "check_pan_balkans_serbia_parity", name: "Pan Balkans/Serbian Count", type: "EPL" },
-  { key: "audit_multi_match_status", name: "Goal Rush/Conference Multimatch", type: "EPL" },
-  { key: "check_date_time_format_integrity", name: "Date Format Consistency", type: "EPL" },
-  { key: "check_live_broadcast_uniqueness", name: "1 Market-Channel-Match Live Limit", type: "EPL" },
-  { key: "audit_channel_line_item_count", name: "Channel Line Item Count", type: "EPL" },
-  { key: "check_combined_archive_status", name: "Archive Keyword Flagging", type: "EPL" },
-  { key: "suppress_duplicated_audience", name: "Non-Metered Audience Removal", type: "EPL" },
-  { key: "harmonize_uk_ire_program_descriptions_strict", name: "Ireland to UK Desc Copy", type: "EPL" },
-  { key: "audit_ovn_whistle_to_whistle", name: "UK Whistle to Whistle", type: "EPL" },
-  { key: "check_game_of_the_day_match", name: "Game of the Day Match Check", type: "EPL" },
-  { key: "check_non_metered_primary_market_audience", name: "Non-Metered Primary Audience", type: "EPL" },
-  { key: "check_legacy_mapping", name: "Legacy Mapping Check", type: "EPL" },
-  { key: "check_premier_league_october_obligation", name: "Premier League Oct Obligation", type: "EPL" },
-  { key: "filter_short_programs", name: "Short Program Filter", type: "EPL" },
-  { key: "check_star_sports_3_consolidation", name: "Star Sports 3 Consolidation", type: "EPL" },
-  { key: "check_bsa_nielsen_audience_presence", name: "BSA Nielsen Audience Check", type: "EPL" },
-  { key: "audit_uk_ire_volume_consistency", name: "UK/IRE Volume Consistency", type: "EPL" },
-
-  // --- NEWLY ADDED (From Python Dictionary) ---
-  { key: "check_source_mediatype_validity", name: "Source/MediaType Validity", type: "EPL" },
-  { key: "sa_nielsen_inclusion_check", name: "SA Nielsen Inclusion Check", type: "EPL" },
-  { key: "epl_live_vs_delay_validation", name: "EPL Live vs Delay Validation", type: "EPL" },
-  { key: "pl_magazine_highlights_classification", name: "PL Mag/Highlights Classification", type: "EPL" },
-  { key: "audit_uk_ire_duplication_alignment", name: "UK/IRE Duplication Alignment", type: "EPL" },
-  { key: "audit_ott_broadcast_consolidation", name: "OTT Broadcast Consolidation", type: "EPL" },
-  { key: "check_missing_live_games", name: "Missing Live Games Check", type: "EPL" }
-];
-
-// --- 🏎️ FORMULA 1 ---
-const f1Checks = [
-  // --- Integrity / Review Checks ---
-    { key: "check_italy_mexico", name: "Channel/Market Duplication Check", type: "F1" },
-    { key: "check_f1_obligations", name: "F1 Broadcaster Obligation Check", type: "F1" },
-    { key: "duration_limits", name: "Duration Limits (5m-5h) Check", type: "F1" },
-    { key: "live_date_integrity", name: "Live Session Date Integrity", type: "F1" },
-    { key: "check_session_completeness", name: "Session Count Completeness", type: "F1" },
-    { key: "update_audience_from_overnight", name: "Update Audience from Overnight Max", type: "F1" },
-    { key: "apply_duplication_weights", name: "Apply Market Duplication Weights", type: "F1" },
-
-    // --- Removal Checks ---
-    { key: "remove_andorra", name: "Remove Andorra Data", type: "F1" },
-    { key: "remove_serbia", name: "Remove Serbia Data", type: "F1" },
-    { key: "remove_montenegro", name: "Remove Montenegro Data", type: "F1" },
-    { key: "remove_brazil_espn_fox", name: "Remove Brazil ESPN/FOX Duplicates", type: "F1" },
-  ];
-
-// --- 🎾 TENNIS ---
-const tennisChecks = [
-  { key: "check_set_scores", name: "Set Score Validation", type: "Tennis" },
-  { key: "audit_tie_break_rules", name: "Tie-Break Rule Check", type: "Tennis" },
-  { key: "check_player_seedings", name: "Player Seeding Integrity", type: "Tennis" },
-  { key: "validate_grand_slam_points", name: "Grand Slam Points Check", type: "Tennis" },
-];
-
-// --- 📝 STANDARD / DEFAULT ---
 const defaultChecks = [
-  { key: "period_check", name: "Period Integrity Check", type: "Audit" },
-  { key: "completeness_check", name: "Field Completeness Check", type: "Audit" },
+  { key: "period_check", name: "Period Integrity Check", type: "Audit", description: "Ensures all data falls within the defined reporting period start and end dates." },
+  { key: "completeness_check", name: "Field Completeness Check", type: "Audit", description: "Flags rows missing mandatory fields like Channel Name or Start Time." },
+  { key: "overlap_duplicate_daybreak_check", name: "Overlap & Daybreak Analysis", type: "Laliga", description: "Detects time overlaps and handles midnight cross-over logic." },
+  { key: "program_category_check", name: "Program Category Logic", type: "Laliga", description: "Classifies content type based on duration and naming conventions." },
+  { key: "check_event_matchday_competition", name: "Fixture Validation", type: "Laliga", description: "Cross-references BSR entries against the official fixture list." },
+  { key: "market_channel_consistency_check", name: "Market Consistency (ROSCO)", type: "Laliga", description: "Verifies channel-market mapping against the ROSCO master file." }
+];
+
+const footballChecks = [
   
-  // Added based on your backend code
-  { key: "overlap_duplicate_daybreak_check", name: "Overlap, Duplicate & Daybreak Analysis", type: "Laliga" },
-  { key: "program_category_check", name: "Program Category & Duration Logic", type: "Laliga" },
-  { key: "check_event_matchday_competition", name: "Event & Matchday Fixture Validation", type: "Laliga" },
-  { key: "market_channel_consistency_check", name: "Market & Channel Consistency (ROSCO)", type: "Laliga" },
- ];
+  { key: "impute_lt_live_status", name: "L/T Keyword Live Override", type: "EPL", description: "Flags missing 'Live' status despite the presence of the 'L/T' tag." },
+  { key: "consolidate_gillete_soccer", name: "Gillette Soccer Consolidation", type: "EPL", description: "Flags short, sequential 'Gillete Soccer' entries that should be combined." },
+  { 
+    key: "consolidate_soccer_sunday", 
+    name: "Soccer Sunday Consolidation", 
+    type: "EPL", 
+    description: "Flags sequential 'Soccer Sunday' programs in UK/Ireland with gaps ≤ 30 mins." 
+  },
+  { key: "check_sky_showcase_live", name: "Sky Showcase (UK) Repeat Check", type: "EPL", description: "Flags any program incorrectly marked as 'Live' on Sky Showcase (UK)." },
+  { key: "standardize_uk_ire_region", name: "UK/Europe Region Correction", type: "EPL", description: "Flags any non-'Europe' region name for UK/Ireland data." },
+  { key: "check_fixture_vs_case", name: "VS Case Sensitivity", type: "EPL", description: "Flags fixture names using uppercase/mixed-case separators." },
+  { key: "check_pan_balk_serbia_parity", name: "Pan Balkans/Serbian Count", type: "EPL", description: "Flags a discrepancy in the row count between Pan-Balkans and Serbia data." },
+  { key: "audit_multi_match_status", name: "Goal Rush/Conference Multimatch", type: "EPL", description: "Flags programs missing the 'MultiMatch' fixture tag despite having a multi-match keyword in the description." },
+  { key: "check_date_time_format_integrity", name: "Date Format Consistency", type: "EPL", description: "Flags malformed or non-standard date and time strings." },
+  { key: "check_live_broadcast_uniqueness", name: "1 Market-Channel-Match Live Limit", type: "EPL", description: "Flags scheduling conflicts (time/channel) for live broadcasts." },
+  { key: "audit_channel_line_item_count", name: "Channel Line Item Count", type: "EPL", description: "Generates a metric for overall channel data volume (monitoring metric)." },
+  { key: "check_combined_archive_status", name: "Archive Keyword Flagging", type: "EPL", description: "Flags data rows that should be removed or moved to an archive storage." },
+  { key: "suppress_duplicated_audience", name: "Non-Metered Audience Removal", type: "EPL", description: "Flags non-zero audience figures on duplicated rows." },
+  { key: "harmonize_uk_ire_program_descriptions_strict", name: "Ireland to UK Desc Copy", type: "EPL", description: "Flags descriptions that are out of sync between UK and Ireland entries with matching times." },
+  { key: "audit_ovn_whistle_to_whistle", name: "UK Whistle to Whistle", type: "EPL", description: "Cross Check Whistle to Whistle in Ovn sheet." },
+  { key: "check_game_of_the_day_match", name: "Game of the Day Match Check", type: "EPL", description: "Flags 'Game of the Day' rows that do not align with the Overnight report data." },
+  { key: "check_non_metered_primary_market_audience", name: "Non-Metered Primary Audience", type: "EPL", description: "Flags unexpected non-zero audience data from non-metered sources." },
+  { key: "check_legacy_mapping", name: "Legacy Mapping Check", type: "EPL", description: "Flags any 'Market' or 'Channel' name that is non-standard or deprecated." },
+  { key: "check_premier_league_october_obligation", name: "Premier League Oct Obligation", type: "EPL", description: "Cross Checking of channels from CDT/OVN Sheet." },
+  { key: "filter_short_programs", name: "Short Program Filter", type: "EPL", description: "Identifies and flags programs with durations under 5 minutes." },
+  { key: "check_star_sports_3_consolidation", name: "Star Sports 3 Consolidation", type: "EPL", description: "Prioritizing Malayalam over Star Sports 3." },
+  { key: "check_bsa_nielsen_audience_presence", name: "BSA Nielsen Audience Check", type: "EPL", description: "Make sure Non-metered Data (Time Bands) has Audience." },
+  { key: "audit_uk_ire_volume_consistency", name: "UK/IRE Volume Consistency", type: "EPL", description: "UK and Ireland line item consistency." },
+  { key: "check_source_mediatype_validity", name: "Source/MediaType Validity", type: "EPL", description: "Validates authorized values like 'BC Data'." },
+  { key: "sa_nielsen_inclusion_check", name: "SA Nielsen Inclusion Check", type: "EPL", description: "Validates South African Nielsen data for Pan-African broadcasts." },
+  { key: "epl_live_vs_delay_validation", name: "EPL Live vs Delay Validation", type: "EPL", description: "Validates 'Live' tag based on kickoff alignment." },
+  { key: "pl_magazine_highlights_classification", name: "PL Mag/Highlights Classification", type: "EPL", description: "Strictly classifies programs based on keywords." },
+  { key: "audit_uk_ire_duplication_alignment", name: "UK/IRE Duplication Alignment", type: "EPL", description: "Ensures identical handling of duplicates in UK/IRE." },
+  { key: "audit_ott_broadcast_consolidation", name: "OTT Broadcast Consolidation", type: "EPL", description: "Merges linear TV data with OTT streaming data." },
+  { key: "check_missing_live_games", name: "Missing Live Games Check", type: "EPL", description: "Identifies live matches missing from the BSR." }
+];
+
+const f1Checks = [
+  { key: "check_italy_mexico", name: "Channel/Market Duplication Check", type: "F1", description: "Checks for duplicate sessions specifically in Italy and Mexico." },
+  { key: "check_f1_obligations", name: "F1 Broadcaster Obligation Check", type: "F1", description: "Verifies session coverage (P1, P2, P3, Qualy, Race)." },
+  { key: "duration_limits", name: "Duration Limits (5m-5h) Check", type: "F1", description: "Flags session entries shorter than 5m or longer than 5h." },
+  { key: "live_date_integrity", name: "Live Session Date Integrity", type: "F1", description: "Ensures date matches the official FIA calendar." },
+  { key: "check_session_completeness", name: "Session Count Completeness", type: "F1", description: "Checks for all 5 session types per Grand Prix weekend." },
+  { key: "update_audience_from_overnight", name: "Update Audience from Overnight Max", type: "F1", description: "Replaces estimates with overnight metered values." },
+  { key: "apply_duplication_weights", name: "Apply Market Duplication Weights", type: "F1", description: "Adjusts figures for shared-market broadcasts." },
+  { key: "remove_andorra", name: "Remove Andorra Data", type: "F1", description: "Strips Andorra data covered by Spanish rights." },
+  { key: "remove_serbia", name: "Remove Serbia Data", type: "F1", description: "Excludes Serbian data per F1 standards." },
+  { key: "remove_montenegro", name: "Remove Montenegro Data", type: "F1", description: "Excludes Montenegro data." },
+  { key: "remove_brazil_espn_fox", name: "Remove Brazil ESPN/FOX Duplicates", type: "F1", description: "Cleans up overlapping Brazilian market data." }
+];
+
+const tennisChecks = [
+  { key: "check_set_scores", name: "Set Score Validation", type: "Tennis", description: "Validates logical set scores for completed matches." },
+  { key: "audit_tie_break_rules", name: "Tie-Break Rule Check", type: "Tennis", description: "Ensures tie-break scores are relevant to sets." },
+  { key: "check_player_seedings", name: "Player Seeding Integrity", type: "Tennis", description: "Verifies seedings against ATP/WTA rankings." },
+  { key: "validate_grand_slam_points", name: "Grand Slam Points Check", type: "Tennis", description: "Validates point distribution for Slams." }
+];
+
+const serieAChecks = [
+  { key: "check_missing_market_duplicator", name: "Market Duplicator Data Check", type: "Serie A", description: "Flags missing entries from market duplicator source." },
+  { key: "consolidation_split_program", name: "Consolidation Check (Split)", type: "Serie A", description: "Validates programs requiring split-program formatting." },
+  { key: "bsr_pre_post_exclusion", name: "Pre/Post BSR Exclusion", type: "Serie A", description: "Filters out Pre/Post match programming." },
+  { key: "upload_issues_audit", name: "Upload Issues Audit", type: "Serie A", description: "Audits integrity issues during file upload." },
+  { key: "audience_trend_session_level", name: "Session Level Audience Trends", type: "Serie A", description: "Compares trends at individual session levels." },
+  { key: "infront_month_filter", name: "Infront Data Filter", type: "Serie A", description: "Filters data for specific Infront contract months." },
+  { key: "identical_broadcast_duplication", name: "Identical Broadcast Line Check", type: "Serie A", description: "Flags duplicate entries on identical broadcast lines." }
+];
 
 // ----------------------------------------------------------------------
-// 2. COLUMN DEFINITIONS
+// 2. DATA GRID COLUMNS
 // ----------------------------------------------------------------------
+
 const getSummaryColumns = (isDarkMode: boolean): GridColDef[] => [
-  { field: 'description', headerName: 'Description', flex: 1.5, minWidth: 250, sortable: false },
-  { 
-    field: 'action', 
-    headerName: 'Check Key', 
-    width: 220, 
-    valueGetter: (value: any, row: any) => row.action || row.check_key || 'Unknown Check'
-  },
+  { field: 'description', headerName: 'Audit Description', flex: 1.5, minWidth: 250 },
+  { field: 'action', headerName: 'Logic Key', width: 220, valueGetter: (value: any, row: any) => row.action || row.check_key || 'Unknown' },
   { 
     field: 'status', 
     headerName: 'Status', 
-    width: 140,
+    width: 130,
     renderCell: (params) => {
         const status = params.value as string;
-        let color = 'bg-gray-100 text-gray-800';
-        if (['Completed', 'Passed', 'OK', 'Success'].includes(status)) color = 'bg-green-100 text-green-800';
-        else if (['Flagged', 'Issue Found', 'Failed', 'Error'].includes(status)) color = 'bg-red-100 text-red-800';
-        else if (status === 'Skipped') color = 'bg-yellow-100 text-yellow-800';
-        
+        const isSuccess = ['Completed', 'Passed', 'OK', 'Success'].includes(status);
+        const isError = ['Flagged', 'Issue Found', 'Failed', 'Error'].includes(status);
         return (
-            <span className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${color}`}>
-                {status}
-            </span>
+          <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider border ${
+            isSuccess ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-400 dark:border-emerald-500/20' : 
+            isError ? 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-500/10 dark:text-rose-400 dark:border-rose-500/20' : 
+            'bg-slate-50 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'
+          }`}>
+            {status}
+          </span>
         );
     }
   },
   { 
     field: 'total_issues_flagged', 
-    headerName: 'Flag Count', 
-    width: 120,
-    valueGetter: (value: any, row: any) => row.details?.rows_flagged ?? 0
+    headerName: 'Anomalies', 
+    width: 100, 
+    renderCell: (params) => (
+      <span className={`font-mono font-bold ${params.value > 0 ? 'text-rose-500' : 'text-slate-500 dark:text-slate-400'}`}>
+        {params.value}
+      </span>
+    ),
+    valueGetter: (value: any, row: any) => row.details?.rows_flagged ?? 0 
   },
-  { 
-    field: 'market', 
-    headerName: 'Market',
-    width: 120,
-    valueGetter: (value: any, row: any) => row.details?.market || '-'
-  }
+  { field: 'market', headerName: 'Market', width: 120, valueGetter: (value: any, row: any) => row.details?.market || '-' }
 ];
 
 // ----------------------------------------------------------------------
@@ -903,338 +912,383 @@ type ListViewProps = {
 };
 
 const ListView = ({ id, setIsModalNewTaskOpen }: ListViewProps) => {
-  
-  // --- IDENTIFY PROJECT ---
   const { data: projects } = useGetProjectsQuery();
   const currentProject = projects?.find((p) => p.id === Number(id));
   const projectName = currentProject?.name || "";
 
-  // ⭐️ LOGIC: Select Check List based on Project Name ⭐️
-  let availableChecks = defaultChecks;
-  let isMarketProject = false; // "Market" projects use the new Python BSR Validator logic
+  // LAYOUT STATE
+  const [isQcPanelOpen, setIsQcPanelOpen] = useState(true);
 
-  if (projectName === "Foot Ball" || projectName === "EPL") {
-      availableChecks = footballChecks;
-      isMarketProject = true;
-  } else if (projectName === "Formula 1") {
-      availableChecks = f1Checks;
-      isMarketProject = true;
-  } else if (projectName === "Tennis") {
-      availableChecks = tennisChecks;
-      isMarketProject = true;
-  } else {
-      // Default / Standard Audit
-      availableChecks = defaultChecks;
-      isMarketProject = false;
+  let availableChecks = defaultChecks;
+  let isMarketProject = false;
+  
+  // LOGO & TEXT COLOR LOGIC 
+  let ProjectLogo = null;
+  let projectColor = "bg-blue-600";
+  let projectTextColor = "text-blue-600 dark:text-blue-400"; // Added Text Color Variable
+
+  if (projectName === "Foot Ball" || projectName === "EPL") { 
+    availableChecks = footballChecks; 
+    isMarketProject = true; 
+    ProjectLogo = "/sidebar_premier_league.png"; 
+    projectColor = "bg-purple-600";
+    projectTextColor = "text-purple-700 dark:text-purple-400";
+  } else if (projectName === "Formula 1") { 
+    availableChecks = f1Checks; 
+    isMarketProject = true; 
+    ProjectLogo = "/sidebar_f1.png";
+    projectColor = "bg-red-600";
+    projectTextColor = "text-red-600 dark:text-red-500";
+  } else if (projectName === "Tennis") { 
+    availableChecks = tennisChecks; 
+    isMarketProject = true; 
+    ProjectLogo = "/Tennis.png";
+    projectColor = "bg-emerald-600";
+    projectTextColor = "text-emerald-600 dark:text-emerald-400";
+  } else if (projectName === "Serie A") { 
+    availableChecks = serieAChecks; 
+    isMarketProject = true; 
+    ProjectLogo = "/sidebar_serie_a.png";
+    projectColor = "bg-blue-500";
+    projectTextColor = "text-blue-600 dark:text-blue-400";
+  } else if (projectName === "LaLiga" || projectName === "Laliga") { 
+    ProjectLogo = "/sidebar_laliga.png";
+    projectColor = "bg-orange-500";
+    projectTextColor = "text-orange-600 dark:text-orange-500";
   }
 
-  // --- RTK QUERY MUTATIONS ---
-  // 1. Standard QC (Old Logic)
-  const [runStandardQc, { 
-    isLoading: isStandardLoading, 
-    data: standardData,
-    error: standardError,
-    isSuccess: isStandardSuccess 
-  }] = useRunQcChecksMutation();
+  const [runStandardQc, { isLoading: isStandardLoading, data: standardData, error: standardError, isSuccess: isStandardSuccess }] = useRunQcChecksMutation();
+  const [runMarketQc, { isLoading: isMarketLoading, data: marketData, error: marketError, isSuccess: isMarketSuccess }] = useRunMarketChecksMutation();
 
-  // 2. Market QC (New Logic: Football, F1, Tennis)
-  const [runMarketQc, { 
-    isLoading: isMarketLoading, 
-    data: marketData,
-    error: marketError,
-    isSuccess: isMarketSuccess
-  }] = useRunMarketChecksMutation();
-
-  // Unified State
   const isLoading = isStandardLoading || isMarketLoading;
   const isSuccess = isStandardSuccess || isMarketSuccess;
   const error = standardError || marketError;
   const summaryData = isMarketProject ? marketData : standardData;
 
-  // --- UI STATE ---
   const [selectedBSRFile, setSelectedBSRFile] = useState<File | null>(null);
   const [selectedRoscoFile, setSelectedRoscoFile] = useState<File | null>(null);
   const [selectedDataFile, setSelectedDataFile] = useState<File | null>(null);
-  const [selectedMacroFile, setSelectedMacroFile] = useState<File | null>(null); 
-
   const [selectedChecks, setSelectedChecks] = useState<string[]>([]);
   const [processStatus, setProcessStatus] = useState<'idle' | 'complete' | 'error'>('idle');
   const [localError, setLocalError] = useState<string | null>(null);
   const [qcResultMeta, setQcResultMeta] = useState<{url: string, name: string} | null>(null);
 
   const isDarkMode = useAppSelector((state) => state.global.isDarkMode);
-
-  // --- VALIDATION ---
-  // For Market Projects (Football/F1/Tennis), only BSR & Checks are strictly mandatory
-  const isReadyToRun = isMarketProject 
-    ? (selectedBSRFile && selectedChecks.length > 0) 
-    : (selectedBSRFile && selectedRoscoFile); // Standard usually needs Rosco
-
+  const isReadyToRun = isMarketProject ? (selectedBSRFile && selectedChecks.length > 0) : (selectedBSRFile && selectedRoscoFile);
   const combinedStatus = isLoading ? 'loading' : processStatus === 'complete' ? 'complete' : localError ? 'error' : 'idle';
 
-  // --- EFFECT: Handle Response ---
   useEffect(() => {
     if (isSuccess && summaryData) {
       const response = summaryData as unknown as QcRunResponse;
       setProcessStatus('complete');
       setLocalError(null);
-      
       if (response.download_url) {
-          // Fix URL parsing to be safe
-          try {
-             const urlPart = response.download_url.split('?')[1];
-             const urlParams = new URLSearchParams(urlPart);
-             const filename = urlParams.get('filename') || "Processed_Result.xlsx";
-             setQcResultMeta({ url: response.download_url, name: filename });
-          } catch (e) {
-             setQcResultMeta({ url: response.download_url, name: "Processed_Result.xlsx" });
-          }
+        setQcResultMeta({ url: response.download_url, name: "Processed_Result.xlsx" });
       }
-
     } else if (error) {
       setProcessStatus('error');
-      setLocalError(`❌ API Error: ${(error as any).data?.detail || 'Processing failed.'}`);
-      setQcResultMeta(null);
+      setLocalError(`API Error: ${(error as any).data?.detail || 'Processing failed.'}`);
     }
   }, [isSuccess, summaryData, error]);
 
-  // --- EFFECT: Reset Selected Checks when Project Changes ---
   useEffect(() => {
-      setSelectedChecks([]);
+      setSelectedChecks(availableChecks.map(c => c.key)); 
       setProcessStatus('idle');
       setLocalError(null);
       setQcResultMeta(null);
-      // Optional: Auto-select all checks when switching projects
-      // setSelectedChecks(availableChecks.map(c => c.key));
-  }, [id, projectName]);
+  }, [id, projectName,availableChecks]);
 
-  // --- HANDLERS ---
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>, fileType: 'bsr' | 'rosco' | 'data' | 'macro') => {
-    const file = event.target.files?.[0];
-    if (fileType === 'bsr') setSelectedBSRFile(file || null);
-    else if (fileType === 'rosco') setSelectedRoscoFile(file || null);
-    else if (fileType === 'data') setSelectedDataFile(file || null); 
-    else if (fileType === 'macro') setSelectedMacroFile(file || null); 
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>, fileType: string) => {
+    const file = event.target.files?.[0] || null;
+    if (fileType === 'bsr') setSelectedBSRFile(file);
+    else if (fileType === 'rosco') setSelectedRoscoFile(file);
+    else if (fileType === 'data') setSelectedDataFile(file); 
   };
 
   const handleCheckToggle = (key: string) => {
-    setSelectedChecks(prev => 
-      prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
-    );
+    setSelectedChecks(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]);
   };
 
   const handleSelectAll = () => {
-    if (selectedChecks.length === availableChecks.length) {
-      setSelectedChecks([]);
-    } else {
-      setSelectedChecks(availableChecks.map(c => c.key));
-    }
+    setSelectedChecks(selectedChecks.length === availableChecks.length ? [] : availableChecks.map(c => c.key));
   };
 
   const handleRunChecks = async () => {
     if (!isReadyToRun || isLoading) return;
-    
-    setProcessStatus('idle'); 
-    setLocalError(null);
-    setQcResultMeta(null); 
-
+    setProcessStatus('idle'); setLocalError(null); setQcResultMeta(null); 
     const formData = new FormData();
-
     try {
         if (isMarketProject) {
-            // --- SCENARIO A: MARKET QC (Football, F1, Tennis) ---
             formData.append('bsr_file', selectedBSRFile as File);
             if (selectedRoscoFile) formData.append('obligation_file', selectedRoscoFile);
             if (selectedDataFile) formData.append('overnight_file', selectedDataFile);
-            if (selectedMacroFile) formData.append('macro_file', selectedMacroFile);
-
             selectedChecks.forEach(checkKey => formData.append('checks', checkKey));
             formData.append('check_configs', JSON.stringify({})); 
-
             await runMarketQc(formData).unwrap();
-
         } else {
-            // --- SCENARIO B: STANDARD QC ---
             formData.append('bsr_file', selectedBSRFile as File);
             formData.append('rosco_file', selectedRoscoFile as File); 
             if (selectedDataFile) formData.append('data_file', selectedDataFile);
-
             await runStandardQc(formData).unwrap();
         }
-
-    } catch (err) {
-      console.error("Execution failed:", err);
-    }
+    } catch (err) { console.error(err); }
   };
 
   const handleDownload = () => {
     if (!qcResultMeta) return;
-    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000/';
-    // Handle cases where download_url might already contain the base URL or not
-    const finalUrl = qcResultMeta.url.startsWith('http') 
-        ? qcResultMeta.url 
-        : new URL(qcResultMeta.url, baseUrl).href;
-    
-    window.location.href = finalUrl;
+    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL; 
+    const cleanBase = baseUrl?.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+    const cleanPath = qcResultMeta.url.startsWith('/api') ? qcResultMeta.url.replace('/api', '') : qcResultMeta.url;
+    window.location.href = `${cleanBase}${cleanPath}`;
   };
 
-  // ----------------------------------------------------------------------
-  // 4. RENDER
-  // ----------------------------------------------------------------------
   return (
-    <div className="grid grid-cols-1 gap-8 xl:grid-cols-4 w-full">
-      {/* COLUMN 1: INPUTS */}
-      <div className="col-span-1 xl:col-span-4 rounded-lg bg-white p-6 shadow dark:bg-dark-secondary">
-        
-        <div className="flex flex-col md:flex-row md:space-x-6 space-y-6 md:space-y-0">
-             {/* LEFT: CHECKS */}
-             <div className="flex-1 space-y-4 pt-0">
-                <div className="flex justify-between items-center">
-                    <h3 className="text-xl font-bold dark:text-white">
-                        {projectName} Checks
-                    </h3>
-                    <button onClick={handleSelectAll} className="text-sm text-blue-600 hover:underline">
-                        {selectedChecks.length === availableChecks.length ? "Deselect All" : "Select All"}
-                    </button>
-                </div>
-                
-                {/* Scrollable Check List */}
-                <div className="max-h-96 space-y-2 overflow-y-auto pr-2 border border-gray-200 dark:border-gray-700 rounded p-2">
-                  {availableChecks.length > 0 ? availableChecks.map((check) => (
-                    <div key={check.key} className="flex items-center justify-between rounded-md p-3 hover:bg-gray-100 dark:hover:bg-gray-700">
-                      <label className="flex items-center">
-                        <input
-                          type="checkbox"
-                          checked={selectedChecks.includes(check.key)}
-                          onChange={() => handleCheckToggle(check.key)}
-                          className="form-checkbox h-4 w-4 text-blue-600 rounded"
-                        />
-                        <span className="ml-3 text-sm dark:text-gray-200">{check.name}</span>
-                      </label>
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${isMarketProject ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-500'}`}>
+    <div className="h-screen w-full bg-[#F8FAFC] dark:bg-[#050505] text-slate-900 dark:text-slate-100 flex flex-col overflow-hidden transition-colors duration-300">
+      
+      {/* 1. COMPACT HEADER */}
+      <header className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0B0F1A] flex items-center justify-between shrink-0 z-10 shadow-sm">
+        <div className="flex items-center gap-4">
+          <div className={`p-1.5 rounded-xl shadow-lg flex items-center justify-center shadow-black/10 w-12 h-12
+            ${ProjectLogo ? 'bg-transparent dark:bg-white/10' : projectColor}
+          `}>
+            {ProjectLogo ? (
+              <Image src={ProjectLogo} alt={`${projectName} Logo`} width={48} height={48} className="w-full h-full object-contain drop-shadow-sm" />
+            ) : (
+              <ShieldCheck size={24} className="text-white" />
+            )}
+          </div>
+          <div>
+            <h1 className="text-lg font-extrabold tracking-tight leading-none dark:text-slate-100">
+              {/* BRANDED TEXT COLOR APPLIED HERE */}
+              <span className={projectTextColor}>{projectName || "Global"}</span> Quality Checks
+            </h1>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium mt-1 uppercase tracking-widest">Quality Assurance</p>
+          </div>
+        </div>
+
+        {/* User Preference Toggle Button */}
+        <button 
+          onClick={() => setIsQcPanelOpen(!isQcPanelOpen)}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all border ${
+            isQcPanelOpen 
+            ? 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-transparent hover:bg-slate-200 dark:hover:bg-slate-700' 
+            : 'bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-500/30 shadow-sm'
+          }`}
+        >
+          {isQcPanelOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
+          {isQcPanelOpen ? 'Hide Parameters' : 'Configure Parameters'}
+          {!isQcPanelOpen && (
+            <span className="ml-2 bg-blue-600 text-white px-2 py-0.5 rounded-full text-[10px]">{selectedChecks.length}</span>
+          )}
+        </button>
+      </header>
+
+      {/* 2. MAIN WORKSPACE */}
+      <main className="flex-1 flex overflow-hidden p-4 md:p-6 gap-6 relative">
+        <div className="absolute top-[-20%] left-[-10%] w-[50%] h-[50%] bg-blue-600/5 rounded-full blur-[120px] pointer-events-none hidden dark:block" />
+
+        {/* LEFT PANEL: COLLAPSIBLE QC CHECKS SIDEBAR */}
+        <div 
+          className={`flex flex-col bg-white dark:bg-[#0F131F] border border-slate-200 dark:border-slate-800 rounded-3xl shadow-sm transition-all duration-500 ease-in-out overflow-hidden
+            ${isQcPanelOpen ? 'w-full lg:w-[450px] xl:w-[500px] opacity-100 shrink-0' : 'w-0 opacity-0 border-none'}`}
+        >
+          {/* Header */}
+          <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50 dark:bg-[#0B0F1A] shrink-0">
+            <div className="flex items-center gap-2">
+              <Settings2 size={16} className="text-slate-400" />
+              <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200">Validation Rules</h3>
+            </div>
+            <div className="flex items-center gap-3">
+              <button onClick={handleSelectAll} className="text-[10px] font-bold uppercase tracking-widest text-blue-600 hover:text-blue-700 transition-colors">
+                {selectedChecks.length === availableChecks.length ? "Clear" : "All"}
+              </button>
+              <button onClick={() => setIsQcPanelOpen(false)} className="p-1 rounded-full text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors">
+                <X size={16} />
+              </button>
+            </div>
+          </div>
+
+          {/* Scrolling Single Column List */}
+          <div className="flex-1 overflow-y-auto p-4 custom-scrollbar
+            [&::-webkit-scrollbar]:w-1.5 
+            [&::-webkit-scrollbar-thumb]:bg-slate-200 dark:[&::-webkit-scrollbar-thumb]:bg-slate-700 
+            [&::-webkit-scrollbar-track]:bg-transparent"
+          >
+            <div className="flex flex-col gap-2">
+              {availableChecks.map((check) => (
+                <div 
+                  key={check.key} 
+                  onClick={() => handleCheckToggle(check.key)}
+                  className={`group flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all duration-200 
+                    ${selectedChecks.includes(check.key) 
+                      ? 'border-blue-400 bg-blue-50/50 dark:bg-blue-500/10 dark:border-blue-500/50 shadow-sm' 
+                      : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0F131F] hover:border-blue-300 dark:hover:border-slate-600'
+                    }`}
+                >
+                  <div className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors ${selectedChecks.includes(check.key) ? 'bg-blue-600 border-blue-600' : 'border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 group-hover:border-blue-400'}`}>
+                    {selectedChecks.includes(check.key) && <CheckCircle size={10} className="text-white" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex justify-between items-start gap-2 mb-0.5">
+                      <h4 className="text-xs font-bold text-slate-900 dark:text-slate-100 leading-tight">{check.name}</h4>
+                      <span className="shrink-0 text-[8px] font-black uppercase tracking-widest text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">
                         {check.type}
                       </span>
                     </div>
-                  )) : (
-                      <p className="text-sm text-gray-500 p-4">No checks configured for this project type.</p>
-                  )}
+                    {/* Always visible description, no clicks needed */}
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed pr-2">
+                      {check.description}
+                    </p>
+                  </div>
                 </div>
+              ))}
             </div>
-
-            {/* RIGHT: FILES */}
-            <div className="flex-1 space-y-4 pt-0">
-                <h3 className="text-xl font-bold dark:text-white">QC File Selection</h3>
-                 <div className="flex space-x-4">
-                    <div className="flex-1">
-                        <p className="font-medium text-gray-700 dark:text-gray-300">BSR Data File (Mandatory)</p>
-                        <label className="flex flex-col items-center justify-center border-2 border-dashed border-blue-300 p-4 cursor-pointer rounded-lg bg-blue-50 dark:bg-blue-950/50 h-full">
-                            <FileText className="h-8 w-8 text-blue-600" />
-                            <p className="mt-2 text-sm text-blue-600 dark:text-blue-300 text-center">{selectedBSRFile ? selectedBSRFile.name : "Upload BSR (.xlsx)"}</p>
-                            <input type="file" className="hidden" accept=".xlsx" onChange={(e) => handleFileChange(e, 'bsr')} />
-                        </label>
-                    </div>
-                    <div className="flex-1">
-                        <p className="font-medium text-gray-700 dark:text-gray-300">{isMarketProject ? "Obligation File" : "Rosco File"}</p>
-                        <label className="flex flex-col items-center justify-center border-2 border-dashed border-green-300 p-4 cursor-pointer rounded-lg bg-green-50 dark:bg-green-950/50 h-full">
-                            <FileText className="h-8 w-8 text-green-600" />
-                            <p  className="mt-2 text-sm text-green-600 dark:text-green-300 text-center">{selectedRoscoFile ? selectedRoscoFile.name : "Upload File"}</p>
-                            <input type="file" className="hidden" accept=".xlsx" onChange={(e) => handleFileChange(e, 'rosco')} />
-                        </label>
-                    </div>
-                </div>
-                {/* Row 2 */}
-                <div className="flex space-x-4 pt-4">
-                     <div className="flex-1">
-                        <p className="font-medium text-gray-700 dark:text-gray-300">{isMarketProject ? "Overnight File (Opt)" : "Client Data (Opt)"}</p>
-                        <label className="flex flex-col items-center justify-center border-2 border-dashed border-yellow-300 p-4 cursor-pointer rounded-lg bg-yellow-50 dark:bg-yellow-950/50 h-full">
-                            <FileText className="h-8 w-8 text-yellow-600" />
-                            <p  className="mt-2 text-sm text-yellow-600 dark:text-yellow-300 text-center">{selectedDataFile ? selectedDataFile.name : "Upload File"}</p>
-                            <input type="file" className="hidden" accept=".xlsx" onChange={(e) => handleFileChange(e, 'data')} />
-                        </label>
-                    </div>
-                    {isMarketProject && (
-                         <div className="flex-1">
-                            <p className="font-medium text-gray-700 dark:text-gray-300">Macro File (Opt)</p>
-                            <label className="flex flex-col items-center justify-center border-2 border-dashed border-purple-300 p-4 cursor-pointer rounded-lg bg-purple-50 dark:bg-purple-950/50 h-full">
-                                <FileText className="h-8 w-8 text-purple-600" />
-                                <p  className="mt-2 text-sm text-purple-600 dark:text-purple-300 text-center">{selectedMacroFile ? selectedMacroFile.name : "Upload Macro"}</p>
-                                <input type="file" className="hidden" accept=".xlsm" onChange={(e) => handleFileChange(e, 'macro')} />
-                            </label>
-                        </div>
-                    )}
-                </div>
-            </div>
+          </div>
         </div>
 
-        {/* RUN BUTTON */}
-        <button
-          onClick={handleRunChecks}
-          disabled={!isReadyToRun || combinedStatus === 'loading'}
-          className="w-full flex items-center justify-center rounded-md bg-blue-500 px-4 py-2 text-white font-semibold hover:bg-blue-600 disabled:bg-gray-400 mt-4"
-        >
-          {combinedStatus === 'loading' ? (
-            <>
-              <Loader className="mr-2 h-5 w-5 animate-spin" />
-              Running...
-            </>
-          ) : combinedStatus === 'complete' ? (
-            <>
-              <CheckCircle className="mr-2 h-5 w-5" />
-              {isMarketProject ? `Executed ${selectedChecks.length} Market Checks` : "Standard QC Complete"}
-            </>
-          ) : (
-            <>
-              <FileText className="mr-2 h-5 w-5" />
-              Run {projectName} Checks
-            </>
-          )}
-        </button>
-        
-        {/* Error Display */}
-        {localError && (
-             <div className="mt-4 p-4 text-center bg-red-100 rounded-lg dark:bg-red-900/50 text-red-700 dark:text-red-200">
-                <AlertTriangle className="inline h-5 w-5 mr-2" />
-                {localError}
-            </div>
-        )}
-      </div>
+        {/* RIGHT PANEL: UPLOADS (TOP) AND RESULTS (BOTTOM) */}
+        <div className="flex-1 flex flex-col gap-6 min-w-0">
+          
+          {/* UPLOAD SECTION (Horizontal Row) */}
+          <div className="bg-white dark:bg-[#0F131F] border border-slate-200 dark:border-slate-800 rounded-3xl p-5 shadow-sm shrink-0">
+            <h3 className="text-xs font-black uppercase tracking-widest text-slate-500 mb-4 flex items-center gap-2">
+              <Database size={14} /> Payload & Execution
+            </h3>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 h-full">
+              
+              {/* BSR Dropzone */}
+              <label className={`flex flex-col items-center justify-center p-3 border-2 border-dashed rounded-2xl cursor-pointer transition-all text-center h-28
+                ${selectedBSRFile ? 'bg-blue-50 border-blue-400 dark:bg-blue-500/10 dark:border-blue-500/50' : 'bg-slate-50 dark:bg-[#0B0F1A] border-slate-300 dark:border-slate-700 hover:border-blue-400'}`}>
+                {selectedBSRFile ? (
+                   <div className="flex flex-col items-center animate-in zoom-in-95">
+                     <CheckCircle size={20} className="text-blue-500 mb-1" />
+                     <p className="text-xs font-bold text-blue-800 dark:text-blue-300 truncate w-full px-2">{selectedBSRFile.name}</p>
+                   </div>
+                ) : (
+                  <div className="flex flex-col items-center group-hover:-translate-y-0.5 transition-transform">
+                    <FileSpreadsheet size={24} className="mb-2 text-blue-500" />
+                    <p className="text-xs font-bold text-slate-800 dark:text-slate-200">Upload BSR</p>
+                    <p className="text-[9px] text-rose-500 font-bold uppercase tracking-widest mt-1">* Mandatory</p>
+                  </div>
+                )}
+                <input type="file" className="hidden" accept=".xlsx" onChange={(e) => handleFileChange(e, 'bsr')} />
+              </label>
 
-      {/* RESULTS COLUMN */}
-      <div className="col-span-4 space-y-6">
-        <h3 className="text-xl font-bold dark:text-white">Validation Results Summary</h3>
-        
-        {/* Results DataGrid */}
-        {(combinedStatus !== 'idle' && !localError) && (
-          <div className={`h-[500px] w-full ${(!summaryData?.summaries || summaryData.summaries.length === 0) && combinedStatus === 'complete' ? 'hidden' : ''}`}>
-              <DataGrid
+              {/* ROSCO Dropzone */}
+              <label className={`flex flex-col items-center justify-center p-3 border-2 border-dashed rounded-2xl cursor-pointer transition-all text-center h-28
+                ${selectedRoscoFile ? 'bg-emerald-50 border-emerald-400 dark:bg-emerald-500/10 dark:border-emerald-500/50' : 'bg-slate-50 dark:bg-[#0B0F1A] border-slate-300 dark:border-slate-700 hover:border-emerald-400'}`}>
+                {selectedRoscoFile ? (
+                   <div className="flex flex-col items-center animate-in zoom-in-95">
+                     <CheckCircle size={20} className="text-emerald-500 mb-1" />
+                     <p className="text-xs font-bold text-emerald-800 dark:text-emerald-300 truncate w-full px-2">{selectedRoscoFile.name}</p>
+                   </div>
+                ) : (
+                  <div className="flex flex-col items-center group-hover:-translate-y-0.5 transition-transform">
+                    <UploadCloud size={24} className="mb-2 text-emerald-500" />
+                    <p className="text-xs font-bold text-slate-800 dark:text-slate-200">{isMarketProject ? "Channels" : "Rosco Target"}</p>
+                    <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest mt-1">Config XLSX</p>
+                  </div>
+                )}
+                <input type="file" className="hidden" accept=".xlsx" onChange={(e) => handleFileChange(e, 'rosco')} />
+              </label>
+
+              {/* Data Dropzone */}
+              <label className={`flex flex-col items-center justify-center p-3 border-2 border-dashed rounded-2xl cursor-pointer transition-all text-center h-28
+                ${selectedDataFile ? 'bg-amber-50 border-amber-400 dark:bg-amber-500/10 dark:border-amber-500/50' : 'bg-slate-50 dark:bg-[#0B0F1A] border-slate-300 dark:border-slate-700 hover:border-amber-400'}`}>
+                {selectedDataFile ? (
+                   <div className="flex flex-col items-center animate-in zoom-in-95">
+                     <CheckCircle size={20} className="text-amber-500 mb-1" />
+                     <p className="text-xs font-bold text-amber-800 dark:text-amber-300 truncate w-full px-2">{selectedDataFile.name}</p>
+                   </div>
+                ) : (
+                  <div className="flex flex-col items-center group-hover:-translate-y-0.5 transition-transform">
+                    <UploadCloud size={24} className="mb-2 text-amber-500" />
+                    <p className="text-xs font-bold text-slate-800 dark:text-slate-200">Client / OVN</p>
+                    <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest mt-1">(Optional)</p>
+                  </div>
+                )}
+                <input type="file" className="hidden" accept=".xlsx" onChange={(e) => handleFileChange(e, 'data')} />
+              </label>
+
+              {/* RUN BUTTON */}
+              <button 
+                onClick={handleRunChecks} 
+                disabled={!isReadyToRun || combinedStatus === 'loading'} 
+                className={`h-28 flex flex-col items-center justify-center rounded-2xl font-black text-sm uppercase tracking-widest transition-all shadow-lg border-2 border-transparent
+                  ${combinedStatus === 'loading' 
+                    ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed' 
+                    : isReadyToRun 
+                      ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-blue-500/30 active:scale-95 cursor-pointer' 
+                      : 'bg-slate-100 dark:bg-slate-800/50 text-slate-300 dark:text-slate-600 cursor-not-allowed'}`}
+              >
+                {combinedStatus === 'loading' ? (
+                  <><Loader className="animate-spin mb-2" size={28} /> Computing...</>
+                ) : (
+                  <><Zap size={28} className={`mb-2 ${isReadyToRun ? 'text-yellow-400' : 'opacity-50'}`} /> Run Audit</>
+                )}
+              </button>
+            </div>
+
+            {localError && (
+              <div className="mt-4 p-3 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-900/50 flex items-center gap-2 text-rose-700 dark:text-rose-400 text-xs font-bold">
+                <AlertTriangle size={16} className="shrink-0" /> {localError}
+              </div>
+            )}
+          </div>
+
+          {/* RESULTS GRID (Takes remaining height) */}
+          <div className="flex-1 bg-white dark:bg-[#0F131F] border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-sm flex flex-col min-h-[300px]">
+            <div className="flex items-center justify-between mb-4 shrink-0">
+              <h3 className="text-lg font-bold tracking-tight flex items-center gap-2">
+                <Activity size={20} className="text-blue-500" /> Audit Findings
+              </h3>
+              {qcResultMeta && (
+                <button 
+                  onClick={handleDownload} 
+                  className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-emerald-500/20 animate-in fade-in"
+                >
+                  <Download size={16} /> DOWNLOAD
+                </button>
+              )}
+            </div>
+            
+            <div className="flex-1 overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800">
+              {combinedStatus !== 'idle' && !localError ? (
+                <DataGrid 
                   rows={summaryData?.summaries || []} 
                   columns={getSummaryColumns(isDarkMode)} 
                   getRowId={(row) => row.id || Math.random()} 
-                  initialState={{ pagination: { paginationModel: { pageSize: 7 } } }}
-                  pageSizeOptions={[5, 7, 10]}
-                  disableRowSelectionOnClick
-                  className={dataGridClassNames}
-                  sx={dataGridSxStyles(isDarkMode)} 
-              />
+                  initialState={{ pagination: { paginationModel: { pageSize: 50 } } }} 
+                  pageSizeOptions={[50, 100]} 
+                  disableRowSelectionOnClick 
+                  className={dataGridClassNames} 
+                  sx={{
+                    ...dataGridSxStyles(isDarkMode),
+                    border: 'none',
+                    '& .MuiDataGrid-cell': { fontSize: '0.75rem' },
+                    '& .MuiDataGrid-columnHeaderTitle': { fontWeight: 'bold', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }
+                  }} 
+                />
+              ) : (
+                <div className="h-full flex flex-col items-center justify-center text-slate-400 dark:text-slate-600 bg-slate-50/50 dark:bg-transparent">
+                  <Database size={48} strokeWidth={1} className="mb-3 text-slate-300 dark:text-slate-700" />
+                  <p className="text-xs font-bold uppercase tracking-widest">Awaiting Engine Execution</p>
+                </div>
+              )}
+            </div>
           </div>
-        )}
+        </div>
 
-        {/* Download Button */}
-        {combinedStatus === 'complete' && qcResultMeta && (
-            <button
-                onClick={handleDownload}
-                className="w-full flex items-center justify-center rounded-md bg-green-500 px-4 py-3 text-white font-semibold hover:bg-green-600 mt-4"
-            >
-                <Download className="mr-2 h-5 w-5" />
-                Download Result ({qcResultMeta.name})
-            </button>
-        )}
-      </div>
+      </main>
     </div>
   );
 };
 
 export default ListView;
+
+
+
 
 // import React, { useState, useEffect } from "react";
 // import { Upload, X, CheckCircle, AlertTriangle, FileText, Loader, Download } from "lucide-react";

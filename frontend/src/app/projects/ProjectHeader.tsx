@@ -5,6 +5,7 @@ import {
   Grid3x3,
   List,
   PlusSquare,
+  MonitorCog,
   Share2,
   Table,
 } from "lucide-react";
@@ -25,23 +26,23 @@ const ProjectHeader = ({ activeTab, setActiveTab }: Props) => {
         isOpen={isModalNewProjectOpen}
         onClose={() => setIsModalNewProjectOpen(false)}
       />
-      <div className="pb-6 pt-6 lg:pb-4 lg:pt-8">
-        <Header
+      <div className="pb-6 pt-6 lg:pb-0 lg:pt-0">
+        {/* <Header
           name="Sports QC Automation"
           buttonComponent={
             <button
               className="flex items-center rounded-md bg-blue-primary px-3 py-2 text-white hover:bg-blue-600"
               onClick={() => setIsModalNewProjectOpen(true)}
             >
-              <PlusSquare className="mr-2 h-5 w-5" /> New
+              <MonitorCog  className="mr-2 h-5 w-5" /> Config
             </button>
           }
-        />
+        /> */}
       </div>
 
       {/* TABS */}
       <div className="flex flex-wrap-reverse gap-2 border-y border-gray-200 pb-[8px] pt-2 dark:border-stroke-dark md:items-center">
-        <div className="flex flex-1 items-center gap-2 md:gap-4">
+        {/* <div className="flex flex-1 items-center gap-2 md:gap-4"> */}
           {/* 1. Replaced "Board" with "General QC" */}
           {/* <TabButton
             name="General QC"
@@ -50,12 +51,12 @@ const ProjectHeader = ({ activeTab, setActiveTab }: Props) => {
             activeTab={activeTab}
           /> */}
           {/* 2. Replaced "List" with "Sport Specific QC" */}
-          <TabButton
+          {/* <TabButton
             name="Sport Specific QC"
             icon={<List className="h-5 w-5" />}
             setActiveTab={setActiveTab}
             activeTab={activeTab}
-          />
+          /> */}
           {/* 3. Replaced "Timeline" with "Estimations" */}
           {/* <TabButton
             name="Estimations"
@@ -71,7 +72,7 @@ const ProjectHeader = ({ activeTab, setActiveTab }: Props) => {
             activeTab={activeTab}
           /> */}
         </div>
-        <div className="flex items-center gap-2">
+        {/* <div className="flex items-center gap-2">
           <button className="text-gray-500 hover:text-gray-600 dark:text-neutral-500 dark:hover:text-gray-300">
             <Filter className="h-5 w-5" />
           </button>
@@ -87,7 +88,7 @@ const ProjectHeader = ({ activeTab, setActiveTab }: Props) => {
             <Grid3x3 className="absolute left-3 top-2 h-4 w-4 text-gray-400 dark:text-neutral-500" />
           </div>
         </div>
-      </div>
+      </div> */}
     </div>
   );
 };

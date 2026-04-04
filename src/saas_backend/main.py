@@ -37,7 +37,7 @@ master_app.add_middleware(
     allow_credentials=True,
     # --- CHANGE MADE HERE: Explicitly list all methods, including OPTIONS ---
     allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"], 
-    allow_headers=["*"],
+    allow_headers=["*", "Authorization", "Content-Type"],
 )
 
 # --- ROUTING/MOUNTING ---

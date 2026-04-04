@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  # 1. The PostgreSQL Database Container
+  postgress:
+    image: postgres:16
+    container_name: bloggercontainer
+    restart: always
+    environment:
+      # These must match your .env file credentials exactly
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "6000:5432" # Maps your host port 5432 to the container's 5432
+#     volumes:
+#       - postgres_data:/var/lib/postgresql/data # Persists your DB data
+
+#   # 2. Your FastAPI Backend Container
+#   backend:
+#     build: 
+#       context: .
+#       dockerfile: Dockerfile
+#     container_name: fastapi_backend
+#     restart: always
+#     ports:
+#       - "8000:8000"
+#     depends_on:
+#       - db
+#     env_file:
+#       - .env # Automatically pulls in DB_USERNAME, DB_PASSWORD, DB_NAME
+#     environment:
+#       - APP_MODE=dev # Triggers the hot-reload in your start.sh
+#       - DB_HOST=db # CRITICAL: Overrides 'localhost' to point to the db container
+#       - DB_PORT=5432
+#     volumes:
+#       # Mounts your local code into the container so Uvicorn can hot-reload
+#       - .:/app 
+
+# volumes:
+#   # Defines the named volume for database persistence
+#   postgres_data:
