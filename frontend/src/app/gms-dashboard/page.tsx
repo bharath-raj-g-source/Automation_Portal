@@ -1119,7 +1119,8 @@ In terms of Service Level Agreements, the project ${delayText}. From an effort t
                 type="date" 
                 value={workloadStartDate} 
                 onChange={(e) => setWorkloadStartDate(e.target.value)} 
-                className="bg-white dark:bg-[#111623] text-slate-900 dark:text-slate-100 text-xs font-bold outline-none cursor-pointer p-1 rounded border border-slate-200 dark:border-slate-700 w-full sm:w-[120px]"
+                className="bg-white dark:bg-[#111623] text-slate-900 dark:text-slate-100 text-xs font-bold outline-none cursor-pointer p-1 rounded border border-slate-200 dark:border-slate-700 w-full sm:w-[120px] 
+               dark:[&::-webkit-calendar-picker-indicator]:invert"
               />
             </div>
             <div className="flex items-center gap-2 bg-slate-50 dark:bg-[#0B0F1A] border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5">
@@ -1128,7 +1129,8 @@ In terms of Service Level Agreements, the project ${delayText}. From an effort t
                 type="date" 
                 value={workloadEndDate} 
                 onChange={(e) => setWorkloadEndDate(e.target.value)} 
-                className="bg-white dark:bg-[#111623] text-slate-900 dark:text-slate-100 text-xs font-bold outline-none cursor-pointer p-1 rounded border border-slate-200 dark:border-slate-700 w-full sm:w-[120px]"
+                className="bg-white dark:bg-[#111623] text-slate-900 dark:text-slate-100 text-xs font-bold outline-none cursor-pointer p-1 rounded border border-slate-200 dark:border-slate-700 w-full sm:w-[120px] 
+               dark:[&::-webkit-calendar-picker-indicator]:invert"
               />
             </div>
             {(workloadStartDate || workloadEndDate) && (
@@ -1539,3 +1541,4 @@ In terms of Service Level Agreements, the project ${delayText}. From an effort t
 };
 
 export default DeliveryDashboard;
+

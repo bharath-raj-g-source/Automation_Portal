@@ -13,3 +13,7 @@ __pycache__/
 
 .env
 .env.local
+
+
+src/saas_backend/authorized_user.json
+src/saas_backend/client_secrets.json

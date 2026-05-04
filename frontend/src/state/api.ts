@@ -193,7 +193,7 @@ export const api = createApi({
     },
   }),
   reducerPath: "api",
-  tagTypes: ["Projects", "Tasks", "Users", "Teams", "EPLFixtures", "EPLStandings", "EPLChecks", "QcResults","DeliveryAnalytics"],
+  tagTypes: ["Projects", "Tasks", "Users", "Teams", "EPLFixtures", "EPLStandings", "EPLChecks", "QcResults","DeliveryAnalytics","ManagerInsights","CorrelationAnalytics"],
   endpoints: (build) => ({
     getAuthUser: build.query<any, void>({
       queryFn: async (_, _queryApi, _extraoptions, fetchWithBQ) => {
@@ -417,8 +417,9 @@ export const {
   //history
   useGetQcHistoryQuery,
   useGetDeliveryDashboardQuery,
-
   useLazyDownloadWeeklyQcReportQuery,
+
+
 } = api;
 
 // import { createApi, fetchBaseQuery, BaseQueryApi } from "@reduxjs/toolkit/query/react";

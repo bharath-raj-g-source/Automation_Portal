@@ -708,21 +708,28 @@ const QcHistoryDashboard = () => {
         </h1>
         
         <div className="flex flex-col sm:flex-row items-center gap-3 w-full xl:w-auto bg-white dark:bg-[#111623] p-1.5 rounded-xl border border-slate-200 dark:border-slate-800/60 shadow-sm">
-          <div className="flex items-center gap-2 px-3 border-r border-slate-200 dark:border-slate-700/60 w-full sm:w-auto">
-            <Calendar size={14} className="text-slate-400" />
+          <div className="flex items-center gap-2 bg-white dark:bg-[#0B0F1A] border border-indigo-200 dark:border-indigo-500/30 p-1.5 rounded-lg shadow-sm">
+            <span className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest pl-2 flex items-center gap-1">
+              
+            </span>
             <input 
               type="date" 
-              value={exportStartDate} 
-              onChange={e => setExportStartDate(e.target.value)} 
-              className="bg-transparent text-xs outline-none text-slate-600 dark:text-slate-300 font-medium cursor-pointer"
+              value={deliveryFilterStart} 
+              onChange={e => setDeliveryFilterStart(e.target.value)} 
+              className="bg-transparent text-xs outline-none text-slate-600 dark:text-slate-300 cursor-pointer 
+                        dark:scheme-dark dark:[&::-webkit-calendar-picker-indicator]:invert-[0.8] dark:[&::-webkit-calendar-picker-indicator]:brightness-200"
             />
             <span className="text-slate-400 text-xs">-</span>
             <input 
               type="date" 
-              value={exportEndDate} 
-              onChange={e => setExportEndDate(e.target.value)} 
-              className="bg-transparent text-xs outline-none text-slate-600 dark:text-slate-300 font-medium cursor-pointer"
+              value={deliveryFilterEnd} 
+              onChange={e => setDeliveryFilterEnd(e.target.value)} 
+              className="bg-transparent text-xs outline-none text-slate-600 dark:text-slate-300 cursor-pointer pr-2 
+                        dark:scheme-dark dark:[&::-webkit-calendar-picker-indicator]:invert-[0.8] dark:[&::-webkit-calendar-picker-indicator]:brightness-200"
             />
+            {(deliveryFilterStart || deliveryFilterEnd) && (
+              <button onClick={() => { setDeliveryFilterStart(""); setDeliveryFilterEnd(""); }} className="p-1 hover:bg-indigo-50 dark:hover:bg-indigo-500/20 rounded text-indigo-500 mr-1"><X size={12}/></button>
+            )}
           </div>
           <button 
             onClick={handleDownloadReport}
@@ -870,14 +877,20 @@ const QcHistoryDashboard = () => {
                 type="date" 
                 value={deliveryFilterStart} 
                 onChange={e => setDeliveryFilterStart(e.target.value)} 
-                className="bg-transparent text-xs outline-none text-slate-600 dark:text-slate-300 cursor-pointer"
+                className="bg-transparent text-xs outline-none text-slate-600 dark:text-slate-300 cursor-pointer 
+                          dark:scheme-dark 
+                          dark:[&::-webkit-calendar-picker-indicator]:invert 
+                          dark:[&::-webkit-calendar-picker-indicator]:brightness-150"
               />
               <span className="text-slate-400 text-xs">-</span>
               <input 
                 type="date" 
                 value={deliveryFilterEnd} 
                 onChange={e => setDeliveryFilterEnd(e.target.value)} 
-                className="bg-transparent text-xs outline-none text-slate-600 dark:text-slate-300 cursor-pointer pr-2"
+                className="bg-transparent text-xs outline-none text-slate-600 dark:text-slate-300 cursor-pointer pr-2 
+                          dark:scheme-dark 
+                          dark:[&::-webkit-calendar-picker-indicator]:invert 
+                          dark:[&::-webkit-calendar-picker-indicator]:brightness-150"
               />
               {(deliveryFilterStart || deliveryFilterEnd) && (
                 <button onClick={() => { setDeliveryFilterStart(""); setDeliveryFilterEnd(""); }} className="p-1 hover:bg-indigo-50 dark:hover:bg-indigo-500/20 rounded text-indigo-500 mr-1"><X size={12}/></button>

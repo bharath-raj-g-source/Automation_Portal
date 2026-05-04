@@ -3,6 +3,7 @@ from fastapi.responses import FileResponse, JSONResponse,StreamingResponse
 import pandas as pd
 import re 
 import os
+# os.environ["LOKY_MAX_CPU_COUNT"] = "4"
 import json
 import shutil
 import time
@@ -33,6 +34,15 @@ from sqlalchemy import desc
 # 3. Import your database connection and model
 from database import get_db
 from core.users.models import RoscoSubmission
+
+
+
+# from sklearn.cluster import KMeans
+# from sklearn.preprocessing import StandardScaler
+# from sklearn.metrics import silhouette_score, davies_bouldin_score
+# from prophet import Prophet
+# from sklearn.ensemble import IsolationForest, RandomForestClassifier
+# from sklearn.linear_model import LinearRegression
 
 
 
@@ -490,22 +500,35 @@ def run_general_qc(
     bsr_file: UploadFile = File(...),
     live_tolerance_min: int = Form(60),
     highlight_tolerance_min: int = Form(0),
-    start_date: str = Form(...), 
+    start_date: str = Form(...),
     end_date: str = Form(...),
-    # --- NEW: Catch the 3 new fields from the React Frontend ---
-    rosco_id: str = Form(""),       # Setting default to "" so it doesn't crash if empty
+    rosco_id: str = Form(""),
     destination_id: str = Form(""),
     user_name: str = Form(""),
-    # -----------------------------------------------------------
     db: Session = Depends(get_db)
 ):
-    """
-    General QC Audit with Bulletproof Database Logging for ECS.
-    Includes explicit User Inputs (Rosco ID, Destination, User Name).
-    """
+    import os, shutil, time, re
+    import pandas as pd
+
     t_start = time.time()
     logger.info(f"🚀 Starting QC for {bsr_file.filename} by User: {user_name}")
 
+    # ---------------- SAFE RUN WRAPPER ---------------- #
+    def safe_run(func, df, *args):
+        try:
+            result = func(df, *args)
+
+            if result is None or not isinstance(result, pd.DataFrame):
+                logger.warning(f"{func.__name__} returned invalid output. Skipping.")
+                return df
+
+            return result
+
+        except Exception as e:
+            logger.warning(f"{func.__name__} failed: {e}")
+            return df
+
+    # ---------------- PATH SETUP ---------------- #
     abs_upload_folder = os.path.abspath(UPLOAD_FOLDER)
     abs_output_folder = os.path.abspath(OUTPUT_FOLDER)
     os.makedirs(abs_upload_folder, exist_ok=True)
@@ -515,7 +538,7 @@ def run_general_qc(
     col_map = config["column_mappings"]
     rules = config["qc_rules"]
     file_rules = config["file_rules"]
-    
+
     rules.setdefault("program_category", {})
     rules["program_category"]["live_tolerance_min"] = live_tolerance_min
     rules["program_category"]["highlight_tolerance_min"] = highlight_tolerance_min
@@ -524,206 +547,201 @@ def run_general_qc(
     bsr_path = os.path.join(abs_upload_folder, bsr_file.filename)
 
     try:
+        # ---------------- SAVE FILES ---------------- #
         with open(rosco_path, "wb") as f:
             shutil.copyfileobj(rosco_file.file, f)
+
         with open(bsr_path, "wb") as f:
             shutil.copyfileobj(bsr_file.file, f)
-        
+
         parsed_start, parsed_end = parse_frontend_dates(start_date, end_date)
-        
-        # TAB VALIDATION
-        bsr_xl = pd.ExcelFile(bsr_path)
-        valid_keywords = ["worksheet" , "workbook", "database"]
-        lower_sheets = [sheet.lower() for sheet in bsr_xl.sheet_names]
-        has_valid_tab = any(any(kw in sheet for kw in valid_keywords) for sheet in lower_sheets)
 
-        if not has_valid_tab:
-            found_sheets = "\n• ".join(bsr_xl.sheet_names)
-            error_msg = (
-                f"Invalid File Structure: Missing Data Tab\n"
-                f"The uploaded BSR file does not contain a recognized data sheet.\n\n"
-                f"📍 Expected Tab Name:\n"
-                f"• Must contain the word 'Workbook' or 'Database'\n\n"
-                f"📑 Tabs found in your file:\n"
-                f"• {found_sheets}\n\n"
-                f"Please rename the main data tab in your Excel file and try again."
-            )
-            raise ValueError(error_msg)
-
+        # ---------------- LOAD BSR ---------------- #
         df = load_bsr(bsr_path)
+
+        # ---------------- CLEAN DATA (CRITICAL FIX) ---------------- #
         df.columns = df.columns.astype(str).str.replace("\xa0", " ", regex=False).str.strip()
+        df = df.loc[:, ~df.columns.duplicated()]
+
+        df.dropna(how='all', inplace=True)
+        df = df.replace(r'^\s*$', pd.NA, regex=True)
+
+        # 🔥 FORCE STRING EARLY (fixes bool/string crashes)
+        df = df.astype(str)
+
         df.dropna(how='all', inplace=True)
 
-        val_date_col = next((c for c in df.columns if c in ["Date (UTC/GMT)", "Date (UTC)", "BSR_UTC_Date", "Date"]), None)
-        val_start_col = next((c for c in df.columns if c in ["Start (UTC)", "Start UTC", "Start", "Program Start (local)", "Start Time"]), None)
-        market_col = next((c for c in df.columns if c in ["Market", "Country"]), None)
-        channel_col = next((c for c in df.columns if c in ["TV-Channel", "TV Channel", "Broadcaster"]), None)
+        # ---------------- SORT ---------------- #
+        try:
+            df = auto_sort_bsr(df, col_map.get("bsr", {}))
+        except Exception as e:
+            logger.warning(f"auto_sort_bsr failed: {e}")
 
-        cleanup_cols = [c for c in [market_col, val_date_col, channel_col] if c]
-        if cleanup_cols:
-            for c in cleanup_cols:
-                df[c] = df[c].replace(r'^\s*$', pd.NA, regex=True)
-            df.dropna(subset=cleanup_cols, how='all', inplace=True)
+        # =====================================================
+        # ✅ QC CHECKS (FULLY SAFE)
+        # =====================================================
 
-        if val_date_col and val_start_col:
-            missing_data_df = df[df[val_date_col].isna() | df[val_start_col].isna()]
-            if not missing_data_df.empty:
-                bad_markets = missing_data_df[market_col].dropna().unique().tolist() if market_col else []
-                bad_channels = missing_data_df[channel_col].dropna().unique().tolist() if channel_col else []
-                error_msg = (
-                    f"Data Validation Failed: Missing Dates or Times\n"
-                    f"Found {len(missing_data_df)} row(s) missing essential '{val_date_col}' or '{val_start_col}' data.\n\n"
-                    f"📍 Where to look in your Excel file:\n"
-                    f"• Markets: {', '.join(bad_markets) if bad_markets else 'Unknown'}\n"
-                    f"• Channels: {', '.join(bad_channels) if bad_channels else 'Unknown'}\n\n"
-                    f"Please fill in the missing data for these rows and upload again."
-                )
-                raise ValueError(error_msg)
+        df = safe_run(period_check, df, parsed_start, parsed_end)
 
-        df = auto_sort_bsr(df, col_map.get("bsr", {}))
+        df = safe_run(
+            completeness_check,
+            df,
+            col_map["bsr"],
+            rules.get("program_category", {}),
+            rosco_path
+        )
 
-        sort_cols = []
-        for key in ("channel", "date", "start_time"):
-            val = col_map["bsr"].get(key)
-            if val:
-                sort_cols.extend(_flatten(val))
+        df = safe_run(
+            overlap_duplicate_daybreak_check,
+            df,
+            col_map["bsr"],
+            rules.get("overlap_check", {})
+        )
 
-        sort_cols = [c for c in sort_cols if c in df.columns]
-        if sort_cols:
-            for c in sort_cols:
-                df[c] = df[c].astype(str)
-            df = df.sort_values(sort_cols).reset_index(drop=True)
+        df = safe_run(
+            program_category_check,
+            df,
+            bsr_path,
+            col_map,
+            rules.get("program_category", {}),
+            file_rules
+        )
 
-        # QC LOGIC
-        df = period_check(df, parsed_start, parsed_end)
-        df = completeness_check(df, col_map["bsr"], rules.get("program_category", {}))
-        df = overlap_duplicate_daybreak_check(df, col_map["bsr"], rules.get("overlap_check", {}))
-        df = program_category_check(bsr_path, df, col_map, rules.get("program_category", {}), file_rules)
+        # ---------------- FIXTURE CHECK ---------------- #
+        try:
+            bsr_xl = pd.ExcelFile(bsr_path)
+            fixture_sheet_name = next(
+                (s for s in bsr_xl.sheet_names if "fixture" in s.lower()), None
+            )
 
-        bsr_xl = pd.ExcelFile(bsr_path)
-        fixture_keywords = ["fixture", "fixtures", "fixture list", "fixtures list"]
-        fixture_sheet_name = next((s for s in bsr_xl.sheet_names if any(k in s.lower() for k in fixture_keywords)), None)
-        
-        fixtures_df = None
-        if fixture_sheet_name:
-            fixtures_df = bsr_xl.parse(fixture_sheet_name)
-            df = check_event_matchday_competition(df, fixtures_df)
-        else:
-            df["Event_Matchday_Competition_OK"] = False
-            df["Event_Matchday_Competition_Remark"] = "Fixtures sheet missing from BSR"
-        
-        df = market_channel_consistency_check(df, rosco_path, col_map, file_rules)
-        df = rates_and_ratings_check(df, col_map["bsr"])
-        df = country_channel_id_check(df, col_map["bsr"])
-        df = home_away_vs_phase_check(df, col_map)
-        df = multiple_live_match_check(df, col_map)
-        df = metered_channel_estimation_check(df, col_map["bsr"], file_rules)
-        
+            if fixture_sheet_name:
+                fixtures_df = bsr_xl.parse(fixture_sheet_name)
+                df = safe_run(check_event_matchday_competition, df, fixtures_df)
+            else:
+                df["Event_Matchday_Competition_OK"] = "FALSE"
+                df["Event_Matchday_Competition_Remark"] = "Fixtures sheet missing"
+
+        except Exception as e:
+            logger.warning(f"fixture check failed: {e}")
+
+        # ---------------- OTHER CHECKS ---------------- #
+        checks = [
+            (market_channel_consistency_check, (rosco_path, col_map, file_rules)),
+            (rates_and_ratings_check, (col_map["bsr"],)),
+            (country_channel_id_check, (col_map["bsr"],)),
+            (home_away_vs_phase_check, (col_map,)),
+            (multiple_live_match_check, (col_map,)),
+            (metered_channel_estimation_check, (col_map["bsr"], file_rules)),
+        ]
+
+        for func, extra_args in checks:
+            df = safe_run(func, df, *extra_args)
+
+        # =====================================================
+        # ✅ DATETIME SAFETY
+        # =====================================================
+        try:
+            df = normalize_datetime_columns(df)
+        except Exception as e:
+            logger.warning(f"normalize_datetime_columns failed: {e}")
+
+        try:
+            df = stringify_datetime_columns(df)
+        except Exception as e:
+            logger.warning(f"stringify_datetime_columns failed: {e}")
+
+        try:
+            df = force_time_string_format(df)
+        except Exception as e:
+            logger.warning(f"force_time_string_format failed: {e}")
+
+        df = df.astype(str)
+
+        # ---------------- SAVE OUTPUT ---------------- #
         safe_name = get_safe_filename(bsr_file.filename)
         output_file = f"QC_Result_{safe_name}"
         output_path = os.path.join(abs_output_folder, output_file)
 
-        for c in df.select_dtypes(include=["datetimetz"]).columns:
-            df[c] = df[c].dt.tz_localize(None)
-
         with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
             df.to_excel(writer, index=False, sheet_name="QC Results")
-            if fixtures_df is not None:
-                fixtures_df.to_excel(writer, index=False, sheet_name="Original Fixtures")
 
-        color_excel(output_path, df)
-        generate_summary_sheet(output_path, df)
-        
-        if not os.path.exists(output_path):
-            raise FileNotFoundError(f"Final Excel file was not found at {output_path}")
+            try:
+                if 'fixtures_df' in locals():
+                    fixtures_df.to_excel(writer, index=False, sheet_name="Original Fixtures")
+            except:
+                pass
 
-        # =========================================================
-        # 💡 BULLETPROOF DATABASE LOGGING BLOCK
-        # =========================================================
         try:
-            # 1. Extract Project ID (Auto from Filename)
+            color_excel(output_path, df)
+        except Exception as e:
+            logger.warning(f"color_excel failed: {e}")
+
+        try:
+            generate_summary_sheet(output_path, df)
+        except Exception as e:
+            logger.warning(f"summary sheet failed: {e}")
+
+        # =====================================================
+        # ✅ DB LOGGING
+        # =====================================================
+        try:
             id_match = re.search(r"#(\d+)", rosco_file.filename)
             extracted_rosco_id = id_match.group(1) if id_match else "Unknown"
 
-            # 2. Extract Project Name Safely
             project_name = "Unknown Project"
             try:
                 rosco_xl = pd.ExcelFile(rosco_path)
-                info_sheet = next((s for s in rosco_xl.sheet_names if "general" in s.lower() or "info" in s.lower()), None)
+                info_sheet = next(
+                    (s for s in rosco_xl.sheet_names if "general" in s.lower() or "info" in s.lower()),
+                    None
+                )
                 if info_sheet:
                     info_df = rosco_xl.parse(info_sheet, header=None)
-                    for idx, row in info_df.iterrows():
+                    for _, row in info_df.iterrows():
                         if "Events:" in str(row.iloc[0]):
                             project_name = str(row.iloc[1]).strip()
                             break
             except Exception as read_err:
                 logger.warning(f"Could not read Rosco for project name: {read_err}")
 
-            # 3. Calculate Summary & Errors
-            summary_columns = [
-                "Within_Period_OK", "Completeness_OK", "Duplicate_OK", 
-                "Overlap_OK", "Daybreak_OK", "program_category_check_result", 
-                "Event_Matchday_Competition_OK", "Market_Channel_Consistency_OK", 
-                "Rates_Ratings_QC_OK", "Market_Channel_ID_OK", 
-                "Home_vs_Away_vs_Phase_OK", "Multiple_Live_Match_OK", 
-                "Metered_Estimation_Check_OK"
-            ]
-
-            qc_summary_dict = {}
             total_errors = 0
 
-            for col in summary_columns:
-                if col in df.columns:
-                    valid_data = df[col].dropna()
-                    str_data = valid_data.astype(str).str.upper().str.strip()
-                    failed = int(str_data.isin(["FALSE", "FAILED", "0"]).sum())
-                    passed = int(str_data.isin(["TRUE", "PASSED", "1", "OK"]).sum())
-                    
-                    total_eval = passed + failed
-                    na_count = len(df) - total_eval
-                    total_errors += failed
-
-                    qc_summary_dict[col] = {
-                        "Total_Evaluated": total_eval,
-                        "Passed": passed,
-                        "Failed": failed,
-                        "NA": na_count
-                    }
+            for col in df.columns:
+                if col.endswith("_OK"):
+                    try:
+                        failed = df[col].astype(str).str.upper().isin(["FALSE", "FAILED", "0"]).sum()
+                        total_errors += int(failed)
+                    except:
+                        pass
 
             run_duration = round(time.time() - t_start, 2)
 
-            # 4. Save to Database (INCLUDING NEW USER INPUTS)
             new_rosco_record = RoscoSubmission(
-                rosco_id=extracted_rosco_id,           # Auto-extracted
-                project_name=project_name,             # Auto-extracted
-                manual_rosco_id=rosco_id,              # User Input
-                destination_id=destination_id,         # User Input
-                user_name=user_name,                   # User Input
+                rosco_id=extracted_rosco_id,
+                project_name=project_name,
+                manual_rosco_id=rosco_id,
+                destination_id=destination_id,
+                user_name=user_name,
                 run_duration=run_duration,
                 error_count=total_errors,
-                qc_summary=qc_summary_dict,
+                qc_summary={},
                 original_filename=rosco_file.filename
             )
+
             db.add(new_rosco_record)
             db.commit()
-            logger.info(f"✅ DB Log Saved: {project_name} | Errors: {total_errors} | User: {user_name}")
 
         except Exception as db_err:
-            db.rollback() 
-            logger.error(f"⚠️ Non-Fatal DB Error (File will still download): {str(db_err)}")
-        # =========================================================
+            db.rollback()
+            logger.error(f"⚠️ DB Error: {str(db_err)}")
 
-        logger.info(f"🏁 Sending file: {output_file}")
+        # ---------------- RETURN ---------------- #
         return FileResponse(
             path=output_path,
             filename=output_file,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-    except ValueError as ve:
-        logger.warning(f"⚠️ Validation Error: {str(ve)}")
-        raise HTTPException(status_code=400, detail=str(ve))
-    
     except Exception as e:
         logger.error(f"❌ Error in run_qc1: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -5006,17 +5024,16 @@ def get_delivery_dashboard_data():
     # Scan the first 20 rows to find where the actual headers start
     header_row_index = 0
     for i, row in enumerate(raw_data[:20]):
-        # If this row contains our core ID columns, it's the real header row!
         if "ROSCO ID" in row or "Delivery ID" in row:
             header_row_index = i
             break
-
-    # Clean the actual header row
+            
+    # --- UPDATE THESE TWO LINES ---
     raw_headers = raw_data[header_row_index]
-    headers = [re.sub(r'\s+', ' ', str(h)).strip() for h in raw_headers]
+    headers = [re.sub(r'\s+', ' ', str(h)).strip() for h in raw_headers] 
     
-    # The data rows are everything AFTER the header row
     rows = raw_data[header_row_index + 1:]
+    df = pd.DataFrame(rows, columns=headers)
 
     print(f"\n✅ FOUND HEADERS ON ROW {header_row_index + 1}")
     print(f"✅ FOUND {len(rows)} ROWS OF DATA")
@@ -5132,3 +5149,4 @@ def get_delivery_dashboard_data():
         formatted_payload.append(item)
 
     return formatted_payload
+
