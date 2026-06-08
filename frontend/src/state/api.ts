@@ -176,6 +176,31 @@ export interface DeliveryRecord {
   [key: string]: any;
 }
 
+export interface AutomationHubResponse {
+  primaryMetric: {
+    title: string;
+    value: string;
+  };
+  coreTech: Array<{
+    name: string;
+    color: string;
+  }>;
+  activeProjects: Array<{
+    name: string;
+    owner: string;
+    tech: string;
+    status: string;
+    eta: string;
+    desc: string;
+  }>;
+  deployments: Array<{
+    name: string;
+    owner: string;
+    date: string;
+    desc: string;
+  }>;
+}
+
 // --- API DEFINITION ---
 
 export const api = createApi({
@@ -193,7 +218,7 @@ export const api = createApi({
     },
   }),
   reducerPath: "api",
-  tagTypes: ["Projects", "Tasks", "Users", "Teams", "EPLFixtures", "EPLStandings", "EPLChecks", "QcResults","DeliveryAnalytics","ManagerInsights","CorrelationAnalytics"],
+  tagTypes: ["Projects", "Tasks", "Users", "Teams", "EPLFixtures", "EPLStandings", "EPLChecks", "QcResults","DeliveryAnalytics","ManagerInsights","AutomationHub"],
   endpoints: (build) => ({
     getAuthUser: build.query<any, void>({
       queryFn: async (_, _queryApi, _extraoptions, fetchWithBQ) => {
@@ -369,6 +394,41 @@ export const api = createApi({
       providesTags: ["DeliveryAnalytics"],
     }),
 
+    // 🧠 REALIGNED FOR AUTOMATED TRINO RATINGS ENGINE INTERACTION
+    getDeliveryDashboard2: build.query<any, { 
+    date: string; 
+    start_time: string; 
+    end_time: string; 
+    originators: string[];
+    program_name?: string; // 👈 NEW
+    episode_name?: string; // 👈 NEW
+  }>({
+    query: ({ date, start_time, end_time, originators, program_name, episode_name }) => {
+      const params = new URLSearchParams();
+      params.append("date", date);
+      params.append("start_time", start_time);
+      params.append("end_time", end_time);
+      originators.forEach(net => params.append("originators", net));
+      
+      if (program_name) params.append("program_name", program_name);
+      if (episode_name) params.append("episode_name", episode_name);
+
+      return {
+        url: `/public/ratings?${params.toString()}`,
+        method: "GET"
+      };
+    }
+  }),
+
+    // Add this definition inside your build.endpoints injection block
+    getNetworkDiscovery: build.query<any, { year_month: string }>({
+      query: ({ year_month }) => ({
+        url: "/public/discovery",
+        method: "GET",
+        params: { year_month }
+      }),
+    }),
+
 
     
     uploadFile: build.mutation<UploadResponse, FormData>({
@@ -388,8 +448,53 @@ export const api = createApi({
       }),
     }),
 
+    getTelecastPivots: build.query<any, { 
+    g_id_label: string; 
+    date: string; 
+    network: string; 
+    start_time: string; 
+    end_time: string; 
+    feed_pattern: string; 
+    }>({
+      query: (params) => ({
+        url: "/public/telecast-pivots",
+        method: "GET",
+        params
+      }),
+    }),
 
+    getTelecastPivotsBatch: build.mutation<any, { payload_items: any[] }>({
+      query: (body) => ({
+        url: "/public/telecast-pivots-batch",
+        method: "POST",
+        body
+      }),
+    }),
+
+    // 3. Insert the new query definition
+    getAutomationHub: build.query<AutomationHubResponse, void>({
+      query: () => "qc/automation-hub",
+      providesTags: ["AutomationHub"],
+    }),
+
+    processExcelLedger: build.mutation<Blob, FormData>({
+      query: (formData) => ({
+        url: "/public/process-excel-ledger", // Matches your exact public router path
+        method: "POST",
+        body: formData,
+        responseHandler: (response) => response.blob(), // Seamlessly intercepts the Excel byte buffers
+      }),
+    }),
+
+    getWebsiteUpdates: build.query<any, void>({
+      query: () => "/qc/updates/website",
+    }),
   }),
+    
+      
+
+
+  // }),
 });
 
 // --- EXPORT HOOKS ---
@@ -417,7 +522,16 @@ export const {
   //history
   useGetQcHistoryQuery,
   useGetDeliveryDashboardQuery,
+  useGetDeliveryDashboard2Query,
+  useGetNetworkDiscoveryQuery,
+  useGetTelecastPivotsQuery,
+  useGetTelecastPivotsBatchMutation,
   useLazyDownloadWeeklyQcReportQuery,
+  useGetAutomationHubQuery,
+  useProcessExcelLedgerMutation,
+  useGetWebsiteUpdatesQuery,
+  
+
 
 
 } = api;

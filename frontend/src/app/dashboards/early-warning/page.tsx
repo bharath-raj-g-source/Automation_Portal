@@ -1,872 +1,1535 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
-import { useRunEarlyWarningAnalysisMutation } from "@/state/api"; 
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+// ✅ IMPORT SHEETJS NATIVELY FOR TOTAL CLIENT-SIDE Spreadsheet EXPORTS
+import * as XLSX from "xlsx";
 import { 
-  FileSpreadsheet, CheckCircle, AlertTriangle, Loader2, 
-  Search, Filter, X, Activity, ShieldCheck, 
-  ArrowUpDown, Calendar, Globe, Layers, Eraser,
-  Tv, Download, Clock
+  XCircle,      
+  CheckCircle2,   
+  FileSpreadsheet, 
+  RefreshCw, 
+  Activity, 
+  Layers, 
+  AlertCircle,
+  FolderGit2,
+  Target,
+  Clock,
+  Filter,
+  RotateCcw,
+  Calendar as CalendarIcon,
+  Check,
+  Search,
+  ChevronDown,
+  X,
+  ChevronLeft,
+  ChevronRight,
+  ChevronFirst,
+  ChevronLast,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  BarChart3,
+  UploadCloud
 } from "lucide-react";
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, 
-  Tooltip, Legend, ResponsiveContainer
-} from "recharts";
 
-// --- BRAND COLOR PALETTE (Synchronized) ---
-const COLORS = {
-  GAPS: "#E41C63",        // Rose/Red
-  PARTIAL: "#0F39B1",     // Deep Blue
-  NO_SCHEDULE: "#FFC000", // Amber/Yellow
-  OK: "#22786A",          // Emerald Green
-  TOTAL: "#3B82F6"        // Standard Blue
-};
-
-// --- INTERFACES ---
-interface TrendStat {
-  Date: string;
-  Scheduled: number;
-  "Processing Gaps": number;
-  "No Schedule": number;
-  "Partial Schedule"?: number;
+// --- STRUCTURAL INTERFACES ---
+interface FileMetadata {
+  bsa_view: any[];
+  rosco_view: any[];
+  mandatory_audit: { Channel: string; Found: string; Status: string }[];
+  aura_audit: { Channel: string; Found: string; Status: string }[];
+  date_columns: string[];
 }
 
-interface BsaViewItem {
-  "TV Channel": string;
-  Market: string;
-  "Final Status": string;
-  "Critical Channel"?: string;
-  [key: string]: any; 
+interface DashboardState {
+  status: "LOADING" | "ONLINE" | "ERROR" | "LIMIT_EXCEEDED";
+  fileName: string;
+  extractedFileDate: string;
+  driveId: string;
+  dateRange: string;
+  errorMessage: string;
+  responseTimeMs: number;
+  rawBsaRows: any[];
+  rawDateColumns: string[];
+  rawMandatoryAudit: any[];
+  rawAuraAudit: any[];
 }
 
-interface MandatoryItem {
-  Channel: string;
-  Found: string; 
-  Status: string; 
+interface MetaStatusItem {
+  id: string;
+  label: string;
 }
 
-interface RoscoViewItem {
-  Channel: string;
-  Market: string;
-  "IN AURA": string;
-  "IN BSA": string;
-  "Final Status": string;
-  [key: string]: any; 
+interface RoscoMeta {
+  projectTitle: string;
+  startDate: string;
+  endDate: string;
+  sportsBlocks: string[];
 }
 
-interface FilterOptions {
-  markets: string[];
-  channels: string[];
-  statuses: string[];
-}
+// =========================================================================
+// ⚡️ PERFORMANCE ISOLATION COMPONENTS (Eliminates Re-render Lag)
+// =========================================================================
 
-const EarlyWarningPage = () => {
-  // --- STATE ---
-  const [bsaFile, setBsaFile] = useState<File | null>(null);
-  const [roscoFile, setRoscoFile] = useState<File | null>(null);
-  
-  const [activeTab, setActiveTab] = useState<"bsa" | "trends" | "mandatory" | "rosco" | "timeline">("bsa");
-  const [showFilters, setShowFilters] = useState(true);
+// 1. Isolated Calendar Component
+const ModernCalendar = ({ selectedValue, onSelect, initialDate }: { selectedValue: Date | undefined, onSelect: (d: Date) => void, initialDate: Date }) => {
+  const [viewMonth, setViewMonth] = useState<number>(initialDate.getMonth()); 
+  const [viewYear, setViewYear] = useState<number>(initialDate.getFullYear());
 
-  // Filters State
-  const [selectedMarkets, setSelectedMarkets] = useState<string[]>([]);
-  const [selectedChannels, setSelectedChannels] = useState<string[]>([]);
-  const [selectedStatus, setSelectedStatus] = useState<string[]>([]);
-  const [isCriticalOnly, setIsCriticalOnly] = useState(true); 
-  
-  const [globalSearch, setGlobalSearch] = useState("");
-  const [startDate, setStartDate] = useState<string>("");
-  const [endDate, setEndDate] = useState<string>("");
-  const [sortConfig, setSortConfig] = useState<{ key: string; direction: "asc" | "desc" } | null>(null);
+  const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  const firstDayIndex = new Date(viewYear, viewMonth, 1).getDay();
+  const totalDaysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
 
-  // RTK Query API Hook (Live Server)
-  const [runAnalysis, { data, isLoading: isApiLoading }] = useRunEarlyWarningAnalysisMutation();
-  const [isExporting, setIsExporting] = useState(false);
+  const calendarDays: (number | null)[] = Array.from({ length: firstDayIndex }, () => null);
+  for (let day = 1; day <= totalDaysInMonth; day++) calendarDays.push(day);
 
-  // --- HELPER: ROBUST DATE PARSING ---
-  const toISODateString = (dateStr: string): string => {
-    try {
-      const cleanStr = dateStr.replace(/(\d+)(st|nd|rd|th)/i, '$1');
-      const dateObj = new Date(cleanStr);
-      if (isNaN(dateObj.getTime())) return "";
-      const year = dateObj.getFullYear();
-      const month = String(dateObj.getMonth() + 1).padStart(2, '0');
-      const day = String(dateObj.getDate()).padStart(2, '0');
-      return `${year}-${month}-${day}`;
-    } catch (e) {
-      return "";
-    }
+  const handlePrevMonth = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (viewMonth === 0) { setViewMonth(11); setViewYear(viewYear - 1); } 
+    else setViewMonth(viewMonth - 1);
   };
 
-  // --- THE BRAIN: DYNAMIC LOGIC ---
-  const { filteredTableData, filterOptions, stats, visibleDateColumns, dynamicTrendStats, timelineData } = useMemo(() => {
-    if (!data) return { 
-      filteredTableData: [], 
-      filterOptions: { markets: [], channels: [], statuses: [] }, 
-      stats: null,
-      visibleDateColumns: [] as string[],
-      dynamicTrendStats: [],
-      timelineData: null
-    };
-
-    const rawBsa = data.bsa_view || [];
-    const rawRosco = data.rosco_view || [];
-    
-    // 1. Identify currently visible date columns (Monitoring Period)
-    let dateCols: string[] = data.date_columns || [];
-    if (startDate || endDate) {
-      dateCols = dateCols.filter((colName: string) => {
-        const colIso = toISODateString(colName); 
-        if (!colIso) return true; 
-        const startIso = startDate || "0000-01-01";
-        const endIso = endDate || "9999-12-31";
-        return colIso >= startIso && colIso <= endIso;
-      });
-    }
-
-    // Optimized Critical Channels lookup from server data
-    const criticalChannelNames = new Set(
-      data.mandatory_audit?.map((m: any) => String(m.Channel).toLowerCase().trim()) || []
-    );
-
-    // 2. RE-CALCULATE STATUS DYNAMICALLY (Severity Hierarchy)
-    const processedBsa = rawBsa.map((row: any) => {
-      const visibleValues = dateCols.map(d => String(row[d] || "").toLowerCase());
-      let dynamicStatus = "OK";
-      
-      if (visibleValues.length === 0) {
-        dynamicStatus = row["Final Status"]; 
-      } else if (visibleValues.some(v => v.includes("gaps") || v.includes("missing"))) {
-        dynamicStatus = "FLAG: PROCESSING GAPS";
-      } else if (visibleValues.every(v => v.includes("no schedule"))) {
-        dynamicStatus = "FLAG: NO SCHEDULE";
-      } else if (visibleValues.some(v => v.includes("no schedule"))) {
-        dynamicStatus = "FLAG: PARTIAL SCHEDULE";
-      }
-
-      return { ...row, "Final Status": dynamicStatus };
-    });
-
-    const getChannel = (item: any) => item["TV Channel"] || item["Channel"];
-
-    // 3. APPLY FILTERS
-    const applyFilters = (dataset: any[]) => {
-      return dataset.filter((item: any) => {
-        const marketMatch = selectedMarkets.length === 0 || selectedMarkets.includes(item.Market);
-        const channelMatch = selectedChannels.length === 0 || selectedChannels.includes(getChannel(item));
-        const statusMatch = selectedStatus.length === 0 || selectedStatus.includes(item["Final Status"]);
-        
-        const isCrit = item["Critical Channel"] === "CRITICAL" || criticalChannelNames.has(String(getChannel(item)).toLowerCase().trim());
-        const criticalMatch = !isCriticalOnly || isCrit;
-        
-        const searchMatch = !globalSearch || Object.values(item).some(val => 
-          String(val).toLowerCase().includes(globalSearch.toLowerCase())
-        );
-        
-        return marketMatch && channelMatch && statusMatch && criticalMatch && searchMatch;
-      });
-    };
-
-    const filteredBsa = applyFilters(processedBsa);
-    const filteredRosco = applyFilters(rawRosco);
-
-    // 4. TREND CALCULATION (Synchronized with Partial)
-    const calcTrendStats = dateCols.map((dCol) => {
-      let scheduled = 0, gaps = 0, noSchedule = 0, partial = 0;
-      filteredBsa.forEach((row) => {
-        const val = String(row[dCol] || "").toLowerCase();
-        if (val.includes("gaps") || val.includes("missing")) gaps++;
-        else if (val.includes("no schedule") || val.includes("not in bsa")) noSchedule++;
-        else if (val.includes("partial")) partial++;
-        else if (val === "ok" || val.includes("scheduled")) scheduled++;
-      });
-      return { 
-        Date: dCol, 
-        Scheduled: scheduled, 
-        "Processing Gaps": gaps, 
-        "No Schedule": noSchedule,
-        "Partial Schedule": partial
-      };
-    });
-
-    // 5. CALCULATE 5-CARD STATS
-    const stats = {
-      total: filteredBsa.length,
-      gaps: filteredBsa.filter((i: any) => i["Final Status"].includes("GAPS")).length,
-      partial: filteredBsa.filter((i: any) => i["Final Status"].includes("PARTIAL")).length,
-      noSchedule: filteredBsa.filter((i: any) => i["Final Status"].includes("NO SCHEDULE")).length,
-      ok: filteredBsa.filter((i: any) => i["Final Status"] === "OK").length
-    };
-
-    const markets = Array.from(new Set(processedBsa.map((i: any) => i.Market))).sort() as string[];
-    const channels = Array.from(new Set(processedBsa.map((i: any) => getChannel(i)))).sort() as string[];
-    const statuses = ["OK", "FLAG: PROCESSING GAPS", "FLAG: PARTIAL SCHEDULE", "FLAG: NO SCHEDULE"];
-
-    let tableData = activeTab === 'rosco' ? filteredRosco : filteredBsa;
-
-    // Sorting Logic
-    if (sortConfig) {
-      tableData.sort((a: any, b: any) => {
-        const aVal = a[sortConfig.key] || "";
-        const bVal = b[sortConfig.key] || "";
-        if (aVal < bVal) return sortConfig.direction === "asc" ? -1 : 1;
-        if (aVal > bVal) return sortConfig.direction === "asc" ? 1 : -1;
-        return 0;
-      });
-    }
-
-    // 6. TIMELINE PROCESSING (GANTT)
-    let processedTimeline = null;
-    const responseData = data as any;
-    if (responseData.timeline_view && responseData.timeline_view.length > 0) {
-      const liveEvents = responseData.timeline_view.filter((d: any) => String(d["Type of program"] || "").toLowerCase() === 'live');
-      const parsedEvents = liveEvents.map((d: any) => {
-        const startTs = new Date(d.Start_Datetime).getTime();
-        const endTs = new Date(d.End_Datetime).getTime();
-        return { ...d, marketChannel: `${d.Market} - ${d["TV-Channel"]}`, startTs, endTs, duration: endTs - startTs };
-      }).filter((d: any) => !isNaN(d.startTs) && !isNaN(d.endTs) && d.duration > 0);
-
-      const filteredEvents = parsedEvents.filter((d: any) => {
-        const marketMatch = selectedMarkets.length === 0 || selectedMarkets.includes(d.Market);
-        const channelMatch = selectedChannels.length === 0 || selectedChannels.includes(d["TV-Channel"]);
-        return marketMatch && channelMatch;
-      });
-
-      if (filteredEvents.length > 0) {
-        const minTs = Math.min(...filteredEvents.map((d: any) => d.startTs));
-        const maxTs = Math.max(...filteredEvents.map((d: any) => d.endTs));
-        const grouped = filteredEvents.reduce((acc: any, curr: any) => {
-          if (!acc[curr.marketChannel]) acc[curr.marketChannel] = [];
-          acc[curr.marketChannel].push(curr);
-          return acc;
-        }, {});
-        const sortedKeys = Object.keys(grouped).sort();
-        const ticks = [];
-        let currentTick = new Date(minTs);
-        currentTick.setMinutes(0, 0, 0); 
-        while (currentTick.getTime() <= maxTs + (3600000 * 6)) { 
-          ticks.push(currentTick.getTime());
-          currentTick.setHours(currentTick.getHours() + 6); 
-        }
-        processedTimeline = { minTs, maxTs, totalSpan: maxTs - minTs, grouped, sortedKeys, ticks };
-      }
-    }
-
-    return { 
-      filteredTableData: tableData, filterOptions: { markets, channels, statuses }, 
-      stats, visibleDateColumns: dateCols, dynamicTrendStats: calcTrendStats, timelineData: processedTimeline
-    };
-  }, [data, activeTab, selectedMarkets, selectedChannels, selectedStatus, isCriticalOnly, startDate, endDate, sortConfig, globalSearch]);
-
-  // --- ACTIONS ---
-  const handleUpload = async () => {
-    if (!bsaFile) return;
-    const formData = new FormData();
-    formData.append("bsa_file", bsaFile);
-    if (roscoFile) formData.append("rosco_file", roscoFile);
-    
-    // Reset Filters on new run
-    setSelectedMarkets([]); setSelectedChannels([]); setSelectedStatus([]); 
-    setIsCriticalOnly(true); setStartDate(""); setEndDate(""); setGlobalSearch("");
-    
-    try { 
-      await runAnalysis(formData).unwrap(); 
-    } catch (err) { 
-      console.error("API Error: ", err); 
-      alert("Failed to analyze files. Please check connection.");
-    }
-  };
-
-  const handleDownload = async () => {
-    if (!data || filteredTableData.length === 0) return;
-
-    const now = new Date();
-    const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
-
-    // --- NATIVE .XLSX EXPORT FOR MAIN TABLES (With Colors) ---
-    if (activeTab === 'bsa' || activeTab === 'rosco') {
-      try {
-        setIsExporting(true);
-        
-        // Dynamically import ExcelJS so it doesn't slow down initial page load
-        const ExcelJS = (await import('exceljs')).default;
-        const workbook = new ExcelJS.Workbook();
-        const sheet = workbook.addWorksheet(activeTab === 'bsa' ? 'BSA Analysis' : 'Rosco Compare');
-
-        // 1. Define Columns & Widths
-        const columns = [
-          { header: 'Sr.', key: 'sr', width: 6 },
-          { header: activeTab === 'bsa' ? 'TV Channel' : 'Channel', key: 'channel', width: 28 },
-          { header: 'Market', key: 'market', width: 20 },
-        ];
-        
-        if (activeTab === 'rosco') {
-          columns.push({ header: 'In Aura?', key: 'inaura', width: 12 });
-          columns.push({ header: 'In BSA?', key: 'inbsa', width: 12 });
-        }
-        
-        columns.push({ header: 'Status', key: 'status', width: 25 });
-        
-        // Add Visible Dates
-        visibleDateColumns.forEach(d => columns.push({ header: d, key: d, width: 18 }));
-        sheet.columns = columns;
-
-        // Style the Header Row
-        sheet.getRow(1).font = { bold: true };
-        sheet.getRow(1).alignment = { horizontal: 'center', vertical: 'middle' };
-
-        // 2. Add Data & Style Cells
-        filteredTableData.forEach((row: any, idx: number) => {
-          const rowData: any = { sr: idx + 1 };
-          
-          if (activeTab === 'bsa') {
-            rowData.channel = row["TV Channel"];
-            rowData.market = row.Market;
-            rowData.status = row["Final Status"];
-          } else {
-            rowData.channel = row.Channel;
-            rowData.market = row.Market;
-            rowData.inaura = row["IN AURA"] === "YES" ? "YES" : "NO";
-            rowData.inbsa = row["IN BSA"] === "YES" ? "YES" : "NO";
-            rowData.status = row["Final Status"];
-          }
-          
-          visibleDateColumns.forEach(d => {
-            rowData[d] = (activeTab === 'rosco' && row[d] === "Not in BSA") ? "-" : (row[d] || "-");
-          });
-
-          const excelRow = sheet.addRow(rowData);
-          
-          // Apply strict alignment
-          excelRow.alignment = { vertical: 'middle' };
-          excelRow.getCell('sr').alignment = { horizontal: 'center' };
-          if (activeTab === 'rosco') {
-            excelRow.getCell('inaura').alignment = { horizontal: 'center' };
-            excelRow.getCell('inbsa').alignment = { horizontal: 'center' };
-          }
-
-          // 3. Inject Brand Colors for the Status Column
-          const statusCell = excelRow.getCell('status');
-          statusCell.alignment = { horizontal: 'center', vertical: 'middle' };
-          
-          const s = String(row["Final Status"] || "").toUpperCase();
-          if (s.includes("GAPS")) {
-            statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE41C63' } }; 
-            statusCell.font = { color: { argb: 'FFFFFFFF' }, bold: true };
-          } else if (s.includes("NO SCHEDULE")) {
-            statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFC000' } }; 
-            statusCell.font = { color: { argb: 'FF000000' }, bold: true };
-          } else if (s.includes("PARTIAL")) {
-            statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } }; 
-            statusCell.fill.fgColor = { argb: 'FF0F39B1' }; 
-            statusCell.font = { color: { argb: 'FFFFFFFF' }, bold: true };
-          } else if (s === "OK" || s.includes("SCHEDULED")) {
-            statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF22786A' } }; 
-            statusCell.font = { color: { argb: 'FFFFFFFF' }, bold: true };
-          }
-          
-          // Center the dynamic date columns
-          visibleDateColumns.forEach(d => excelRow.getCell(d).alignment = { horizontal: 'center' });
-        });
-
-        // 4. Generate the actual file
-        const buffer = await workbook.xlsx.writeBuffer();
-        const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = `${activeTab === 'bsa' ? 'BSA_Analysis' : 'Rosco_Compare'}_${timestamp}.xlsx`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-
-      } catch (error) {
-        console.error("Excel generation failed", error);
-        alert("Failed to generate Excel file.");
-      } finally {
-        setIsExporting(false);
-      }
-      return;
-    }
-
-    // --- FALLBACK CSV FOR SECONDARY TABS (Trends, Timeline, Mandatory) ---
-    let exportData: any[] = [];
-    let filename = `EW_Export_${timestamp}.csv`;
-    
-    if (activeTab === 'trends') { filename = `Trend_Tracker_${timestamp}.csv`; exportData = dynamicTrendStats; } 
-    else if (activeTab === 'mandatory') { filename = `Mandatory_Audit_${timestamp}.csv`; exportData = data.mandatory_audit || []; } 
-    else if (activeTab === 'timeline') { filename = `Timeline_Events_${timestamp}.csv`; exportData = (data as any).timeline_view || []; }
-    
-    if (exportData.length === 0) return;
-    
-    const headers = Object.keys(exportData[0] || {});
-    const csvContent = [headers.join(","), ...exportData.map(row => headers.map(f => `"${String(row[f] || "").replace(/"/g, '""')}"`).join(","))].join("\n");
-    const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" }); 
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url; 
-    link.setAttribute("download", filename);
-    document.body.appendChild(link); 
-    link.click(); 
-    document.body.removeChild(link);
-  };
-
-  const requestSort = (key: string) => {
-    let direction: "asc" | "desc" = "asc";
-    if (sortConfig && sortConfig.key === key && sortConfig.direction === "asc") direction = "desc";
-    setSortConfig({ key, direction });
-  };
-
-
-  // --- RENDERING HELPERS ---
-  const getBadgeStyle = (s: string | null) => {
-    const defaultStyle = { backgroundColor: "#F1F5F9", color: "#64748B", borderColor: "transparent" };
-    if (!s) return defaultStyle;
-    const status = s.toUpperCase();
-    if (status.includes("GAPS")) return { backgroundColor: COLORS.GAPS, color: "white", borderColor: "transparent" }; 
-    if (status.includes("NO SCHEDULE")) return { backgroundColor: COLORS.NO_SCHEDULE, color: "black", borderColor: "transparent" }; 
-    if (status.includes("PARTIAL")) return { backgroundColor: COLORS.PARTIAL, color: "white", borderColor: "transparent" };
-    if (status === "OK" || status.includes("SCHEDULED")) return { backgroundColor: COLORS.OK, color: "white", borderColor: "transparent" };
-    return defaultStyle;
-  };
-
-  // Colored Timeline Feature (From Code B, adopted to Code A render structure)
-  const getTimelineColor = (comp: string) => {
-    if(!comp) return { bg: 'bg-[#3498DB]', border: 'border-[#2980B9]', text: 'text-white' };
-    const c = comp.toLowerCase();
-    if (c.includes('practice 1')) return { bg: 'bg-[#5DADE2]', border: 'border-[#3498DB]', text: 'text-white' };
-    if (c.includes('practice 2')) return { bg: 'bg-[#3498DB]', border: 'border-[#2980B9]', text: 'text-white' };
-    if (c.includes('practice 3')) return { bg: 'bg-[#2ECC71]', border: 'border-[#27AE60]', text: 'text-white' };
-    if (c.includes('qualifying')) return { bg: 'bg-[#F39C12]', border: 'border-[#D68910]', text: 'text-white' };
-    if (c.includes('race') || c.includes('grand prix')) return { bg: 'bg-[#E74C3C]', border: 'border-[#C0392B]', text: 'text-white' };
-    if (c.includes('training')) return { bg: 'bg-[#F9E79F]', border: 'border-[#F1C40F]', text: 'text-slate-800' };
-    return { bg: 'bg-[#3498DB]', border: 'border-[#2980B9]', text: 'text-white' };
-  };
-
-  const formatHeaderDate = (dateStr: string) => {
-    const match = dateStr.match(/^(\d+)(st|nd|rd|th|ST|ND|RD|TH)(.*)$/);
-    if (match) {
-      const [_, day, suffix, rest] = match;
-      return (
-        <span className="inline-flex items-center justify-center">
-          <span className="font-bold text-sm text-slate-700 dark:text-slate-200">{parseInt(day)}</span>
-          <sup className="text-[0.55rem] uppercase font-bold text-slate-500 dark:text-slate-400 -top-[0.5em] ml-0.5">{suffix}</sup>
-          <span className="ml-1.5 font-medium text-[10px] text-slate-500">{rest}</span>
-        </span>
-      );
-    }
-    return dateStr;
+  const handleNextMonth = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (viewMonth === 11) { setViewMonth(0); setViewYear(viewYear + 1); } 
+    else setViewMonth(viewMonth + 1);
   };
 
   return (
-    <div className="flex flex-col w-full h-[calc(100vh-64px)] bg-[#F8FAFC] dark:bg-[#0B0C0E]">
-      <div className="flex flex-1 overflow-hidden">
+    <div className="p-4 w-72 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border border-slate-200/60 dark:border-slate-800/60 rounded-2xl shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+      <div className="flex items-center justify-between mb-4 px-1">
+        <span className="font-sans font-black text-sm text-slate-800 dark:text-slate-100">{monthNames[viewMonth]} {viewYear}</span>
+        <div className="flex space-x-1">
+          <button type="button" onClick={handlePrevMonth} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors text-slate-500 active:scale-95"><ChevronLeft size={16} /></button>
+          <button type="button" onClick={handleNextMonth} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors text-slate-500 active:scale-95"><ChevronRight size={16} /></button>
+        </div>
+      </div>
+      <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-mono font-black text-slate-400 uppercase mb-2">
+        <span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span>
+      </div>
+      <div className="grid grid-cols-7 gap-1 text-center">
+        {calendarDays.map((dayNum, cellIdx) => {
+          if (dayNum === null) return <div key={`empty-${cellIdx}`} className="w-8 h-8" />;
+          const isSelected = selectedValue?.getDate() === dayNum && selectedValue?.getMonth() === viewMonth && selectedValue?.getFullYear() === viewYear;
+          return (
+            <button
+              key={`day-${dayNum}`} type="button" onClick={(e) => { e.stopPropagation(); onSelect(new Date(viewYear, viewMonth, dayNum)); }}
+              className={`w-8 h-8 text-xs rounded-xl font-bold flex items-center justify-center transition-all duration-300 active:scale-90 ${isSelected ? "bg-indigo-600 text-white shadow-md shadow-indigo-500/30 scale-105" : "text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"}`}
+            >
+              {dayNum}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+// 2. Isolated Timeline Slicer (Upgraded with Default Latest Day HUD)
+const TimelineSlicer = ({ data, title, icon, colorTheme }: { data: any[], title: string, icon: React.ReactNode, colorTheme: string }) => {
+  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+  
+  if (!data || data.length === 0) return (
+    <div className="w-full bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-800/60 rounded-xl p-5 space-y-4 shadow-sm">
+      <p className="text-center py-4 font-mono text-slate-400 dark:text-slate-500 italic">Timeline columns must be active to model charts onto landscape rails</p>
+    </div>
+  );
+
+  // ✅ FIX: Reverse data once for efficiency, and default to the latest date (index 0) if nothing is hovered
+  const reversedData = [...data].reverse();
+  const activeDay = hoveredIdx !== null ? reversedData[hoveredIdx] : reversedData[0];
+
+  return (
+    <div className="w-full bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-800/60 rounded-xl p-5 space-y-4 shadow-sm animate-in fade-in duration-500 ease-out">
+      <div className="flex items-center space-x-2 text-slate-800 dark:text-slate-200 border-b border-slate-100 dark:border-slate-800 pb-2.5">
+        <div className={`text-${colorTheme}-500`}>{icon}</div>
+        <h2 className="text-xs font-black uppercase tracking-wider font-mono">{title}</h2>
+      </div>
+      
+      <div className="space-y-4 font-sans text-xs select-none">
+        <div className="w-full pt-2 pb-2 flex gap-1.5 overflow-x-auto overflow-y-visible scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800">
+          {reversedData.map((day, idx) => {
+            const isHovered = hoveredIdx === idx;
+            return (
+              <div 
+                key={idx} 
+                onMouseEnter={() => setHoveredIdx(idx)}
+                onMouseLeave={() => setHoveredIdx(null)}
+                className="flex flex-col items-center shrink-0 w-[60px] bg-slate-50/50 dark:bg-slate-900/20 p-1.5 rounded-xl border border-slate-100 dark:border-slate-800/40 relative cursor-pointer transition-all duration-300 ease-out hover:bg-slate-100/80 dark:hover:bg-slate-800/50 hover:border-slate-300 dark:hover:border-slate-700 hover:shadow-sm will-change-transform"
+                style={{ transform: isHovered ? "translateY(-4px)" : "translateY(0px)" }}
+              >
+                <div className="w-4 h-36 rounded-md overflow-hidden flex flex-col-reverse bg-slate-200 dark:bg-slate-800 border border-slate-300/30 transition-all duration-300">
+                  <div style={{ height: `${day.okPct}%` }} className={`bg-emerald-500 w-full transition-opacity duration-300 ${hoveredIdx !== null && !isHovered ? "opacity-60" : "opacity-100"}`} />
+                  <div style={{ height: `${day.noSchedPct}%` }} className={`bg-amber-500 w-full transition-opacity duration-300 ${hoveredIdx !== null && !isHovered ? "opacity-60" : "opacity-100"}`} />
+                  <div style={{ height: `${day.gapsPct}%` }} className={`bg-rose-500 w-full transition-opacity duration-300 ${hoveredIdx !== null && !isHovered ? "opacity-60" : "opacity-100"}`} />
+                </div>
+
+                <span className={`text-[9px] font-mono font-black mt-2 tracking-tight text-center leading-tight whitespace-nowrap transition-colors duration-300 ${isHovered ? `text-${colorTheme}-500 dark:text-${colorTheme}-400` : "text-slate-500 dark:text-slate-400"}`}>
+                  {(() => {
+                    const parts = day.dateLabel.split("-");
+                    if (parts.length !== 3) return day.dateLabel;
+                    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                    return `${parts[0]} ${months[parseInt(parts[1]) - 1] || parts[1]}`;
+                  })()}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="w-full flex items-center justify-center gap-x-6 pt-3 border-t border-slate-100 dark:border-slate-800 font-mono text-[11px] min-h-[44px] flex-wrap gap-y-2 select-none">
+          <div className="flex items-center space-x-2">
+            <div className="w-3 h-3 bg-emerald-500 rounded-sm shrink-0 transition-transform duration-300" style={{ transform: hoveredIdx !== null ? "scale(1.15)" : "scale(1)" }} />
+            <span className="font-sans font-bold text-slate-500 dark:text-slate-400">Scheduled OK</span>
+            <span className="font-sans font-bold text-slate-800 dark:text-slate-200">
+              : {activeDay ? activeDay.rawCounts.ok : 0} ({activeDay ? Math.round(activeDay.okPct) : 0}%)
+            </span>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            <div className="w-3 h-3 bg-amber-500 rounded-sm shrink-0 transition-transform duration-300" style={{ transform: hoveredIdx !== null ? "scale(1.15)" : "scale(1)" }} />
+            <span className="font-sans font-bold text-slate-500 dark:text-slate-400">No Schedule</span>
+            <span className="font-sans font-bold text-slate-800 dark:text-slate-200 min-w-[60px] transition-all duration-200">
+              : {activeDay ? activeDay.rawCounts.noSched : 0} ({activeDay ? Math.round(activeDay.noSchedPct) : 0}%)
+            </span>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            <div className="w-3 h-3 bg-rose-500 rounded-sm shrink-0 transition-transform duration-300" style={{ transform: hoveredIdx !== null ? "scale(1.15)" : "scale(1)" }} />
+            <span className="font-sans font-bold text-slate-500 dark:text-slate-400">Processing Gaps</span>
+            <span className="font-sans font-bold text-slate-800 dark:text-slate-200 min-w-[60px] transition-all duration-200">
+              : {activeDay ? activeDay.rawCounts.gaps : 0} ({activeDay ? Math.round(activeDay.gapsPct) : 0}%)
+            </span>
+          </div>
+
+          <div className="hidden sm:block h-4 w-[2px] bg-slate-200 dark:bg-slate-800 mx-2 self-center shrink-0 transition-colors duration-300" />
+
+          <div className="text-center text-[10px] text-slate-500 dark:text-slate-400 font-black uppercase tracking-wider shrink-0 flex items-center gap-1.5 justify-center">
+            <span>Selected Date Stats:</span>
+            <span className={`text-${colorTheme}-500 dark:text-${colorTheme}-400 font-sans font-black tracking-wide inline-block transition-all duration-300 transform min-w-[95px]`}>
+              {(() => {
+                if (!activeDay) return "—";
+                const parts = activeDay.dateLabel.split("-");
+                if (parts.length !== 3) return activeDay.dateLabel;
+                const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+                const dayNum = parts[0];
+                const mIdx = parseInt(parts[1]) - 1;
+                const mName = months[mIdx] || parts[1];
+                const fullYear = parts[2];
+                return `${dayNum} ${mName}, ${fullYear}`;
+              })()}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// =========================================================================
+// 🚀 DATA COMPLIANCE & SANITIZATION UTILITIES
+// =========================================================================
+const sanitizeExportContent = (val: any) => {
+  if (typeof val !== 'string') return val;
+  // Rule 10: Automated Character Purging for Malicious Formula Injection Defense
+  return val.replace(/^=/, ''); 
+};
+
+// =========================================================================
+// 🚀 MAIN DASHBOARD COMPONENT
+// =========================================================================
+
+export default function EarlyWarningStatusPage() {
+  const [dataState, setDataState] = useState<DashboardState>({
+    status: "LOADING", fileName: "", extractedFileDate: "Pending Sync", driveId: "", dateRange: "", errorMessage: "", responseTimeMs: 0, rawBsaRows: [], rawDateColumns: [], rawMandatoryAudit: [], rawAuraAudit: []
+  });
+
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [isExportingRosco, setIsExportingRosco] = useState(false);
+  const [isExportingMandatory, setIsExportingMandatory] = useState(false);
+  
+  const [startDate, setStartDate] = useState<Date | undefined>(undefined);
+  const [endDate, setEndDate] = useState<Date | undefined>(undefined);
+  const [filterCriticalOnly, setFilterCriticalOnly] = useState<boolean>(true);
+  
+  const [selectedMarkets, setSelectedMarkets] = useState<string[]>([]);
+  const [selectedChannels, setSelectedChannels] = useState<string[]>([]);
+  const [selectedStatuses, setSelectedStatuses] = useState<string[]>([]);
+
+  const [startCalOpen, setStartCalOpen] = useState(false);
+  const [endCalOpen, setEndCalOpen] = useState(false);
+  const [marketOpen, setMarketOpen] = useState(false);
+  const [channelOpen, setChannelOpen] = useState(false);
+  const [statusOpen, setStatusOpen] = useState(false);
+
+  const [marketSearch, setMarketSearch] = useState("");
+  const [channelSearch, setChannelSearch] = useState("");
+  const [statusSearch, setStatusSearch] = useState("");
+
+  const [sortColumn, setSortColumn] = useState<string>("tvChannel"); 
+  const [sortDirection, setSortDirection] = useState<"ASC" | "DESC">("ASC");
+  const [auditSortColumn, setAuditSortColumn] = useState<"channel" | "found" | "status">("channel");
+  const [auditSortDirection, setAuditSortDirection] = useState<"ASC" | "DESC">("ASC");
+  const [auraSortColumn, setAuraSortColumn] = useState<"channel" | "found" | "status">("channel");
+  const [auraSortDirection, setAuraSortDirection] = useState<"ASC" | "DESC">("ASC");
+  const [roscoSortColumn, setRoscoSortColumn] = useState<string>("index");
+  const [roscoSortDirection, setRoscoSortDirection] = useState<"ASC" | "DESC">("ASC");
+  
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [mandatoryCurrentPage, setMandatoryCurrentPage] = useState<number>(1);
+  const [roscoCurrentPage, setRoscoCurrentPage] = useState<number>(1);
+  const rowsPerPage = 10;
+
+  const [auditSearchQuery, setAuditSearchQuery] = useState<string>("");
+  const [auraSearchQuery, setAuraSearchQuery] = useState<string>("");
+  
+  const [roscoMetadata, setRoscoMetadata] = useState<RoscoMeta | null>(null);
+  const [dateDisclaimer, setDateDisclaimer] = useState<string | null>(null);
+  const [isReconciling, setIsReconciling] = useState<boolean>(false);
+  const [reconciledRoscoRows, setReconciledRoscoRows] = useState<any[]>([]);
+  const [roscoSearchQuery, setRoscoSearchQuery] = useState<string>("");
+
+  const startCalRef = useRef<HTMLDivElement>(null);
+  const endCalRef = useRef<HTMLDivElement>(null);
+  const marketRef = useRef<HTMLDivElement>(null);
+  const channelRef = useRef<HTMLDivElement>(null);
+  const statusRef = useRef<HTMLDivElement>(null);
+
+  // --- Targeted Filter States for ROSCO Workspace Matrix ---
+  const [roscoSelectedMarkets, setRoscoSelectedMarkets] = useState<string[]>([]);
+  const [roscoSelectedChannels, setRoscoSelectedChannels] = useState<string[]>([]);
+  const [roscoSelectedStatuses, setRoscoSelectedStatuses] = useState<string[]>([]);
+  
+  const [roscoStartDate, setRoscoStartDate] = useState<Date | undefined>(undefined);
+  const [roscoEndDate, setRoscoEndDate] = useState<Date | undefined>(undefined);
+
+  const [roscoMarketOpen, setRoscoMarketOpen] = useState(false);
+  const [roscoChannelOpen, setRoscoChannelOpen] = useState(false);
+  const [roscoStatusOpen, setRoscoStatusOpen] = useState(false);
+  const [roscoStartCalOpen, setRoscoStartCalOpen] = useState(false);
+  const [roscoEndCalOpen, setRoscoEndCalOpen] = useState(false);
+  
+  const [roscoChannelSearch, setRoscoChannelSearch] = useState("");
+  
+  const roscoMarketRef = useRef<HTMLDivElement>(null);
+  const roscoChannelRef = useRef<HTMLDivElement>(null);
+  const roscoStatusRef = useRef<HTMLDivElement>(null);
+  const roscoStartCalRef = useRef<HTMLDivElement>(null);
+  const roscoEndCalRef = useRef<HTMLDivElement>(null);
+
+  // Sync dates when global dates update after a file upload
+  useEffect(() => {
+    if (startDate && !roscoStartDate) setRoscoStartDate(startDate);
+    if (endDate && !roscoEndDate) setRoscoEndDate(endDate);
+  }, [startDate, endDate]);
+
+  const handleResetFilters = useCallback(() => {
+    if (dataState.rawDateColumns.length > 0) {
+      const parseRawParts = (dStr: string) => {
+        const p = dStr.split("-");
+        return p.length === 3 ? new Date(parseInt(p[2]), parseInt(p[1]) - 1, parseInt(p[0])) : new Date();
+      };
+      const initialEnd = parseRawParts(dataState.rawDateColumns[dataState.rawDateColumns.length - 1]);
+      // Rule 4: Critical Operational Rule - Re-apply 30-Day Lookback Filter Base
+      const initialStart = new Date(initialEnd);
+      initialStart.setDate(initialEnd.getDate() - 30); 
+
+      setStartDate(initialStart);
+      setEndDate(initialEnd);
+    }
+    setFilterCriticalOnly(true); 
+    setSelectedMarkets([]); setSelectedChannels([]); setSelectedStatuses([]);
+    setMarketSearch(""); setChannelSearch(""); setStatusSearch("");
+    setSortColumn("tvChannel"); setSortDirection("ASC");
+    setCurrentPage(1);
+  }, [dataState.rawDateColumns]);
+
+  const formattedLabelDate = (dateObj: Date | undefined) => dateObj ? dateObj.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "Select Date";
+
+  const handleToggleSelection = useCallback((item: string, state: string[], setter: React.Dispatch<React.SetStateAction<string[]>>) => {
+    setter(state.includes(item) ? state.filter(x => x !== item) : [...state, item]);
+    setCurrentPage(1);
+  }, []);
+
+  const handleSortTrigger = (columnKey: string) => {
+    setSortDirection(prev => sortColumn === columnKey && prev === "ASC" ? "DESC" : "ASC");
+    if (sortColumn !== columnKey) setSortColumn(columnKey);
+    setCurrentPage(1);
+  };
+
+  const handleAuditSortTrigger = (columnKey: "channel" | "found" | "status") => {
+    setAuditSortDirection(prev => auditSortColumn === columnKey && prev === "ASC" ? "DESC" : "ASC");
+    if (auditSortColumn !== columnKey) setAuditSortColumn(columnKey);
+    setMandatoryCurrentPage(1);
+  };
+
+  const handleAuraSortTrigger = (columnKey: "channel" | "found" | "status") => {
+    setAuraSortDirection(prev => auraSortColumn === columnKey && prev === "ASC" ? "DESC" : "ASC");
+    if (auraSortColumn !== columnKey) setAuraSortColumn(columnKey);
+  };
+
+  const handleRoscoSortTrigger = (columnKey: string) => {
+    setRoscoSortDirection(prev => roscoSortColumn === columnKey && prev === "ASC" ? "DESC" : "ASC");
+    if (roscoSortColumn !== columnKey) setRoscoSortColumn(columnKey);
+    setRoscoCurrentPage(1);
+  };
+
+  const renderSortIndicatorIcons = (activeCol: string, targetCol: string, dir: "ASC" | "DESC") => {
+    if (activeCol !== targetCol) return <ArrowUpDown size={12} className="text-slate-300 dark:text-slate-600 opacity-50 ml-1.5 shrink-0" />;
+    return dir === "ASC" ? <ArrowUp size={12} className="text-indigo-500 ml-1.5 shrink-0 font-black animate-in slide-in-from-bottom-1" /> : <ArrowDown size={12} className="text-indigo-500 ml-1.5 shrink-0 font-black animate-in slide-in-from-top-1" />;
+  };
+
+  const handleExportToGoogleSheets = () => {
+    if (!processedDataDeck?.tableRows?.length) return;
+    setIsExporting(true);
+    setTimeout(() => {
+      try {
+        const exportRows = processedDataDeck.tableRows.map((row: any, index: number) => {
+          const baseCells: Record<string, any> = { 
+            "SR NO": String(index + 1).padStart(2, "0"), 
+            "TV Channel": sanitizeExportContent(row.tvChannel || "—"), 
+            "Market": sanitizeExportContent(row.market || "—"), 
+            "Pay/Free": sanitizeExportContent(row.payType || "—"), 
+            "Status": sanitizeExportContent(row.status || "—") 
+          };
+          processedDataDeck.activeSortedDates.forEach((dateKey: string) => { 
+            baseCells[dateKey] = sanitizeExportContent(row.rawRowData?.[dateKey] || row.rawRowData?.[dateKey.toLowerCase()] || "—"); 
+          });
+          return baseCells;
+        });
+        const workSheet = XLSX.utils.json_to_sheet(exportRows);
         
-        {/* --- SIDEBAR --- */}
-        {data && (
-          <div className={`${showFilters ? 'w-72 border-r' : 'w-0'} bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 transition-all flex flex-col z-20 overflow-hidden shrink-0`}>
-            <div className={`flex flex-col h-full w-72 ${showFilters ? 'visible' : 'invisible'}`}>
-              <div className="p-4 border-b flex justify-between items-center bg-slate-50/50 dark:bg-slate-800/50">
-                <h2 className="font-bold text-xs uppercase tracking-tight text-slate-700 dark:text-slate-200 flex items-center gap-2"><Filter size={14} /> Data Filters</h2>
-                <button onClick={() => setShowFilters(false)} className="text-slate-400 hover:text-rose-500 transition-colors"><X size={16}/></button>
-              </div>
-              <div className="p-4 space-y-5 overflow-y-auto flex-1 custom-scrollbar">
-                
-                <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-lg border border-slate-100 dark:border-slate-700">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase mb-2 block tracking-wider">Monitoring Period</label>
-                  <div className="flex flex-col gap-2">
-                    <input type="date" className="w-full text-[10px] p-1.5 border rounded bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 outline-none focus:border-blue-500 transition-all" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
-                    <input type="date" className="w-full text-[10px] p-1.5 border rounded bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 outline-none focus:border-blue-500 transition-all" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
-                  </div>
-                </div>
+        // Rule 9: Default Structural Configuration Auto-filters
+        if (workSheet['!ref']) workSheet['!autofilter'] = { ref: workSheet['!ref'] };
 
-                <div className="flex items-center justify-between p-3 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 cursor-pointer group hover:border-blue-300 dark:hover:border-blue-600 transition-colors" onClick={() => setIsCriticalOnly(!isCriticalOnly)}>
-                   <span className="text-[10px] font-bold text-rose-500 uppercase flex items-center gap-2 select-none tracking-wider group-hover:text-rose-600"><ShieldCheck size={12}/> Critical Only</span>
-                   <div className={`w-8 h-4 rounded-full p-0.5 transition-colors ${isCriticalOnly ? 'bg-rose-500' : 'bg-slate-300 dark:bg-slate-600'}`}>
-                      <div className={`bg-white w-3 h-3 rounded-full transform transition-transform ${isCriticalOnly ? 'translate-x-4' : ''}`}></div>
-                   </div>
-                </div>
+        const workBook = XLSX.utils.book_new();
+        // Rule 9: Target sheet identification name labeled 'Matched'
+        XLSX.utils.book_append_sheet(workBook, workSheet, "Matched");
+        XLSX.writeFile(workBook, `Master_Feed_Audit_Metrics_${new Date().toISOString().split('T')[0]}.xlsx`);
+      } finally { setIsExporting(false); }
+    }, 300);
+  };
 
-                <SearchableList label="Market" icon={<Globe size={12}/>} options={filterOptions.markets} selected={selectedMarkets} onChange={setSelectedMarkets} />
-                <SearchableList label="Channel" icon={<Tv size={12}/>} options={filterOptions.channels} selected={selectedChannels} onChange={setSelectedChannels} />
-                
-                {/* Colored Status Filters */}
-                <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase mb-2 flex items-center gap-2 tracking-wider"><Activity size={12}/> Status</label>
-                  <div className="space-y-1">
-                    {filterOptions.statuses.map((s) => {
-                      const statusColor = s.includes('GAPS') ? COLORS.GAPS : s.includes('PARTIAL') ? COLORS.PARTIAL : s.includes('NO') ? COLORS.NO_SCHEDULE : COLORS.OK;
-                      return (
-                        <label key={s} className="flex items-center gap-2 text-[10px] p-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 rounded cursor-pointer transition-colors group">
-                          <input type="checkbox" className="rounded border-slate-300 dark:border-slate-600 text-blue-600 w-3 h-3 focus:ring-0 bg-white dark:bg-slate-700 cursor-pointer" checked={selectedStatus.includes(s)} onChange={(e) => e.target.checked ? setSelectedStatus([...selectedStatus, s]) : setSelectedStatus(selectedStatus.filter(x => x !== s))} />
-                          <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: statusColor }} />
-                          <span className="group-hover:text-blue-600 dark:group-hover:text-blue-400 text-slate-600 dark:text-slate-300 select-none">{s}</span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
+  const handleExportMandatoryChecklist = () => {
+    if (!processedAuditTableDeckRows.length) return;
+    setIsExportingMandatory(true);
+    setTimeout(() => {
+      try {
+        const exportRows = processedAuditTableDeckRows.map((row: any, idx: number) => ({ 
+          "INDEX": idx + 1, 
+          "MANDATORY TV CHANNEL": sanitizeExportContent(row.channelLabelName || "—"), 
+          "FOUND IN BSA": sanitizeExportContent(row.foundInBsaFlag || "—"), 
+          "Status": sanitizeExportContent(row.handshakeStatusLabel || "—") 
+        }));
+        const workSheet = XLSX.utils.json_to_sheet(exportRows);
+        if (workSheet['!ref']) workSheet['!autofilter'] = { ref: workSheet['!ref'] };
 
-                <button onClick={() => { setSelectedMarkets([]); setSelectedChannels([]); setSelectedStatus([]); setIsCriticalOnly(true); setStartDate(""); setEndDate(""); setGlobalSearch(""); }} className="w-full py-2 text-[10px] font-bold text-slate-500 dark:text-slate-400 border border-dashed border-slate-300 dark:border-slate-700 rounded-lg flex items-center justify-center gap-2 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all hover:text-rose-500"><Eraser size={12}/> Reset Filters</button>
-              </div>
+        const workBook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workBook, workSheet, "Matched");
+        XLSX.writeFile(workBook, `Mandatory_Checklist_Audit_${new Date().toISOString().split('T')[0]}.xlsx`);
+      } finally { setIsExportingMandatory(false); }
+    }, 300);
+  };
+
+  const handleExportRoscoWorkspaceSummary = () => {
+    if (!sortedRoscoGridMatrix.length) return;
+    setIsExportingRosco(true);
+    setTimeout(() => {
+      try {
+        const exportRows = sortedRoscoGridMatrix.map((row: any) => {
+          const matchedBsaRow = dataState.rawBsaRows.find(b => String(b["TV Channel"] || b["tv channel"] || "").toLowerCase().trim().replace(/[^a-z0-9]/g, "") === String(row.rosco_name || "").toLowerCase().trim().replace(/[^a-z0-9]/g, ""));
+          const isFoundInBsa = matchedBsaRow !== undefined;
+          const isFoundInAura = row.is_in_aura === "YES";
+          let finalStatusLabel = isFoundInBsa && !isFoundInAura ? "Partial Schedule" : (!isFoundInBsa && isFoundInAura ? "Found in AURA" : (!isFoundInBsa && !isFoundInAura ? "Missing in Both" : "Scheduled OK"));
+          if (matchedBsaRow) {
+            const matchedStatusKey = matchedBsaRow["Final Status"] || matchedBsaRow["final status"] || "OK";
+            if (String(matchedStatusKey).toUpperCase().includes("GAPS")) finalStatusLabel = "Processing Gaps";
+            else if (String(matchedStatusKey).toUpperCase().includes("NO SCHEDULE")) finalStatusLabel = "No Schedule";
+            else if (String(matchedStatusKey).toUpperCase().includes("PARTIAL")) finalStatusLabel = "Partial Schedule";
+          }
+          const baseCells: Record<string, any> = { 
+            "INDEX": row.index, 
+            "ROSCO TV CHANNEL": sanitizeExportContent(row.rosco_name || "—"), 
+            "CHANNEL COUNTRY": sanitizeExportContent(row.country || "—"), 
+            "FOUND IN BSA FILE": isFoundInBsa ? "YES" : "NO", 
+            "FOUND IN AURA MASTER": isFoundInAura ? "YES" : "NO", 
+            "FINAL ALIGNMENT STATUS": sanitizeExportContent(finalStatusLabel) 
+          };
+          [...dataState.rawDateColumns].reverse().forEach((dateKey: string) => { 
+            baseCells[dateKey] = sanitizeExportContent((!isFoundInBsa && !isFoundInAura) ? "-" : (matchedBsaRow ? (matchedBsaRow[dateKey] || "-") : "No Schedule")); 
+          });
+          return baseCells;
+        });
+        const workSheet = XLSX.utils.json_to_sheet(exportRows);
+        if (workSheet['!ref']) workSheet['!autofilter'] = { ref: workSheet['!ref'] };
+
+        const workBook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workBook, workSheet, "Matched");
+        XLSX.writeFile(workBook, `Project_Scope_Reconciliation_${new Date().toISOString().split('T')[0]}.xlsx`);
+      } finally { setIsExportingRosco(false); }
+    }, 300);
+  };
+
+  const handleTriggerEmailComposition = () => {
+    if (!processedDataDeck?.tableRows?.length) return;
+    const emailTo = "sportsautomation-ops@nielsen.com";
+    const emailCc = "localadmin@nielsen.com";
+    const subjectStamp = `BSA Early Warning Audit Report - ${new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+    const emailBodyLines = [
+      `Hi Team,\n\nThe filtered Early Warning Broadcast Schedule Audit (BSA) data grid matrix has been compiled and is ready for downstream manual enrichment processing.\n`,
+      `--- AUDIT STATE SNAPSHOT ---`,
+      `• Extracted Baseline File: ${dataState.fileName}`,
+      `• Selected Target Window: ${startDate ? startDate.toISOString().split('T')[0] : "—"} to ${endDate ? endDate.toISOString().split('T')[0] : "—"}`,
+      `• Total Filtered Channels Tracked: ${processedDataDeck.total}`,
+      `  └─ Processing Gaps: ${processedDataDeck.gaps}\n  └─ Partial Schedules: ${processedDataDeck.partial}\n  └─ Scheduled OK: ${processedDataDeck.ok}\n-----------------------------\n`,
+      `👉 ACTION REQUIRED: Please attach the downloaded report file before sending.\n\nBest Regards,\nBSA Automation Node Portal`
+    ];
+    window.open(`https://mail.google.com/mail/?view=cm&fs=1&to=${emailTo}&cc=${encodeURIComponent(emailCc)}&su=${encodeURIComponent(subjectStamp)}&body=${encodeURIComponent(emailBodyLines.join("\n"))}`, "_blank");
+  };
+  
+  const handleRoscoDocumentIngestion = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsReconciling(true); 
+    setDateDisclaimer(null); 
+    setRoscoMetadata(null); 
+    setReconciledRoscoRows([]);
+
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      try {
+        // Reverted to "binary" to ensure compatibility with your specific SheetJS version
+        const workbook = XLSX.read(evt.target?.result, { type: "binary" });
+        
+        let generalSheetKey = "", monitoringSheetKey = "";
+        workbook.SheetNames.forEach((sheetName) => {
+          const csvText = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]).toLowerCase();
+          if (csvText.includes("monitoring periods") || csvText.includes("monitored event data")) generalSheetKey = sheetName;
+          else if (csvText.includes("channelcountry") || csvText.includes("channelname")) monitoringSheetKey = sheetName;
+        });
+
+        if (!generalSheetKey || !monitoringSheetKey) { 
+          alert("❌ Invalid ROSCO Format. Could not locate monitoring sheets."); 
+          setIsReconciling(false); 
+          return; 
+        }
+
+        const genJson: any[] = XLSX.utils.sheet_to_json(workbook.Sheets[generalSheetKey], { header: 1 });
+        let extractedStart: Date | null = null, extractedEnd: Date | null = null;
+        let projectTitle = "Standard Project Operations";
+        let capturedSports: string[] = [];
+
+        genJson.forEach((row: any) => {
+          const rowKey = String(row[0] || "").trim().toLowerCase(), rowVal = String(row[1] || "").trim();
+          if (rowKey.includes("monitoring periods:")) {
+            const rangeMatch = rowVal.match(/(\d{4}-\d{2}-\d{2})\s*-\s*(\d{4}-\d{2}-\d{2})/);
+            if (rangeMatch) { 
+              extractedStart = new Date(rangeMatch[1]); 
+              extractedEnd = new Date(rangeMatch[2]); 
+            }
+          }
+          if (rowKey.includes("additional information")) projectTitle = rowVal;
+          if (rowKey.includes("sports:") && !capturedSports.includes(rowVal)) capturedSports.push(rowVal);
+        });
+
+        if (extractedStart && extractedEnd) {
+          setStartDate(extractedStart); 
+          setEndDate(extractedEnd);
+          setRoscoMetadata({ 
+            projectTitle, 
+            startDate: (extractedStart as Date).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }), 
+            endDate: (extractedEnd as Date).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }), 
+            sportsBlocks: capturedSports 
+          });
+          if ((extractedStart as Date) < new Date("2026-01-01")) {
+            setDateDisclaimer(`⚠️ Partial Project Coverage Disclaimer: Historical monitoring period data is not contained within active archive tables.`);
+          }
+        }
+
+        const preparedChannels = XLSX.utils.sheet_to_json(workbook.Sheets[monitoringSheetKey])
+          .map((row: any) => ({ 
+            name: String(row.ChannelName || "").trim(), 
+            country: String(row.ChannelCountry || "").trim() 
+          }))
+          .filter(c => c.name !== "");
+        
+        const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+
+const response = await fetch(`${API_BASE}/qc/early-warning/reconcile-rosco`, { 
+          method: "POST", 
+          headers: { 
+            "X-Requested-With": "XMLHttpRequest",
+            "Content-Type": "application/json"
+          }, 
+          body: JSON.stringify({ channels: preparedChannels }) 
+        });
+
+        // Enhanced error handling to expose backend issues (like 422 or CORS)
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(errData.detail || `Server returned ${response.status}: ${response.statusText}`);
+        }
+
+        const outcome = await response.json();
+        if (outcome.reconciled_matrix) {
+          setReconciledRoscoRows(outcome.reconciled_matrix);
+        }
+
+      } catch (err: any) { 
+        console.error("Ingest error:", err); 
+        // This will now print the EXACT reason it failed in the alert box
+        alert(`❌ Failed to process ROSCO file.\n\nReason: ${err.message}`);
+      } finally { 
+        setIsReconciling(false); 
+        if (e.target) e.target.value = ''; // Resets input so you can re-upload the same file to test
+      }
+    };
+    
+    // Reverted back to BinaryString to match your original file setup
+    reader.readAsBinaryString(file);
+  };
+
+  const handleClearRoscoWorkspace = () => { setRoscoMetadata(null); setDateDisclaimer(null); setReconciledRoscoRows([]); };
+
+  const fetchCloudSyncStatus = async () => {
+    setIsRefreshing(true);
+    const startTime = performance.now();
+    try {
+      // Rule 3: Enforcing Standard AJAX Contextual Signatures
+      // Rule 3: Enforcing Standard AJAX Contextual Signatures
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/qc/early-warning/status`, {
+        headers: {
+          "X-Requested-With": "XMLHttpRequest",
+          "Content-Type": "application/x-www-form-urlencoded"
+        }
+      });
+
+      if (!response.ok) {
+        const errJson = await response.json().catch(() => ({}));
+        throw new Error(errJson.detail || `Server error code: ${response.status}`);
+      }
+
+      const payload = await response.json();
+      const endTime = performance.now();
+      const elapsedMs = Math.round(endTime - startTime);
+
+      if (payload.status === "ONLINE" && payload.cached_analysis) {
+        const analysis: FileMetadata = payload.cached_analysis;
+        const bsaRows = analysis.bsa_view || [];
+
+        // Rule 10: Hard Row Protection Boundary Checks
+        if (bsaRows.length > 200000) {
+          setDataState(prev => ({ ...prev, status: "LIMIT_EXCEEDED", errorMessage: "Data compilation constraint overridden. Stack extraction aborted (Exceeds 200,000 bounds)." }));
+          setIsRefreshing(false);
+          return;
+        }
+
+        const mandatoryAudit = analysis.mandatory_audit || [];
+        const auraAudit = (analysis as any).aura_audit || [];
+
+        const structuralBlacklist = ["channel id", "channel_id", "pay-free tv", "pay/free tv", "cmat_id", "critical channel", "final status", "tv channel", "market"];
+        const validDates = (analysis.date_columns || []).filter(dateStr => !structuralBlacklist.includes(dateStr.toLowerCase().trim())).sort((a, b) => {
+          const parseDate = (d: string) => { const p = d.split("-"); return p.length === 3 ? new Date(parseInt(p[2]), parseInt(p[1]) - 1, parseInt(p[0])).getTime() : new Date(d).getTime(); };
+          return parseDate(a) - parseDate(b);
+        });
+
+        if (validDates.length > 0) {
+          // Rule 4: Critical Default 30-Day Window Applied Here based on max date index
+          const resolvedEnd = (() => { const p = validDates[validDates.length - 1].split("-"); return p.length === 3 ? new Date(parseInt(p[2]), parseInt(p[1]) - 1, parseInt(p[0])) : new Date(); })();
+          const computedLookbackStart = new Date(resolvedEnd); computedLookbackStart.setDate(resolvedEnd.getDate() - 30);
+          if (!startDate) setStartDate(computedLookbackStart);
+          if (!endDate) setEndDate(resolvedEnd);
+        }
+
+        const formattedRange = validDates.length > 0 ? `${validDates[0]} to ${validDates[validDates.length - 1]}` : "No dates localized";
+
+        setDataState({
+          status: "ONLINE", fileName: payload.last_refreshed_file || "Consolidated_BSA_Report.xlsx", extractedFileDate: "01st Jun 2026", driveId: "1kXZ3J5OV97T9C5SJNCnU33J91vyepiux",
+          dateRange: formattedRange, errorMessage: "", responseTimeMs: elapsedMs,
+          rawBsaRows: bsaRows, rawDateColumns: validDates, rawMandatoryAudit: mandatoryAudit, rawAuraAudit: auraAudit
+        });
+      }
+    } catch (error: any) { 
+      setDataState(prev => ({ ...prev, status: "ERROR", errorMessage: error.message || "Internal Network Cluster Handshake Refused." })); 
+    } finally { 
+      setIsRefreshing(false); 
+    }
+  };
+
+  useEffect(() => {
+    fetchCloudSyncStatus();
+  }, []);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      const target = event.target as Node;
+      if (startCalOpen && startCalRef.current && !startCalRef.current.contains(target)) setStartCalOpen(false);
+      if (endCalOpen && endCalRef.current && !endCalRef.current.contains(target)) setEndCalOpen(false);
+      if (marketOpen && marketRef.current && !marketRef.current.contains(target)) setMarketOpen(false);
+      if (channelOpen && channelRef.current && !channelRef.current.contains(target)) setChannelOpen(false);
+      if (statusOpen && statusRef.current && !statusRef.current.contains(target)) setStatusOpen(false);
+      // ✅ ROSCO Listeners
+      if (roscoStartCalOpen && roscoStartCalRef.current && !roscoStartCalRef.current.contains(target)) setRoscoStartCalOpen(false);
+      if (roscoEndCalOpen && roscoEndCalRef.current && !roscoEndCalRef.current.contains(target)) setRoscoEndCalOpen(false);
+      if (roscoMarketOpen && roscoMarketRef.current && !roscoMarketRef.current.contains(target)) setRoscoMarketOpen(false);
+      if (roscoChannelOpen && roscoChannelRef.current && !roscoChannelRef.current.contains(target)) setRoscoChannelOpen(false);
+      if (roscoStatusOpen && roscoStatusRef.current && !roscoStatusRef.current.contains(target)) setRoscoStatusOpen(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [startCalOpen, endCalOpen, marketOpen, channelOpen, statusOpen, roscoMarketOpen, roscoChannelOpen, roscoStatusOpen, roscoStartCalOpen, roscoEndCalOpen]);
+
+  // =========================================================================
+  // 🧠 HIGH-PERFORMANCE MEMOIZED REDUCERS
+  // =========================================================================
+
+  const metaLists = useMemo(() => {
+    const marketSet = new Set<string>(), channelSet = new Set<string>();
+    dataState.rawBsaRows.forEach((row: any) => {
+      const rowMarket = String(row["Market"] || row["market"] || "-").trim();
+      const rowChannelName = String(row["TV Channel"] || row["tv channel"] || "").trim();
+      if (rowMarket && rowMarket !== "-") marketSet.add(rowMarket);
+      if (rowChannelName) channelSet.add(rowChannelName);
+    });
+    return { markets: Array.from(marketSet).sort(), channels: Array.from(channelSet).sort(), statuses: [{ id: "GAPS", label: "Processing Gaps" }, { id: "PARTIAL", label: "Partial Schedule" }, { id: "NOSCHED", label: "No Schedule" }, { id: "OK", label: "Scheduled OK" }] };
+  }, [dataState.rawBsaRows]);
+
+  const filteredMarketsList = useMemo(() => metaLists.markets.filter(m => m.toLowerCase().includes(marketSearch.toLowerCase())), [metaLists.markets, marketSearch]);
+  const filteredChannelsList = useMemo(() => metaLists.channels.filter(c => c.toLowerCase().includes(channelSearch.toLowerCase())), [metaLists.channels, channelSearch]);
+  const filteredStatusesList = useMemo(() => metaLists.statuses.filter(s => s.label.toLowerCase().includes(statusSearch.toLowerCase())), [metaLists.statuses, statusSearch]);
+
+  const processedDataDeck = useMemo(() => {
+    if (!dataState.rawBsaRows.length) return { total: 0, gaps: 0, partial: 0, noSched: 0, ok: 0, tableRows: [], activeSortedDates: [], activeRowChannelKeys: new Set<string>() };
+
+    const selectedDateKeys = dataState.rawDateColumns.filter(dateStr => {
+      const parts = dateStr.split("-");
+      if (parts.length !== 3) return false;
+      const targetTime = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0])).getTime();
+      return targetTime >= (startDate ? new Date(startDate).setHours(0, 0, 0, 0) : 0) && targetTime <= (endDate ? new Date(endDate).setHours(23, 59, 59, 999) : Infinity);
+    });
+
+    const reverseChronologicalDates = [...selectedDateKeys].reverse();
+    const strictMandatorySet = new Set(dataState.rawMandatoryAudit.map((m: any) => String(m.Channel || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "")));
+
+    let gapsCount = 0, partialCount = 0, noSchedCount = 0, okCount = 0;
+    const filteredMatrixRows = dataState.rawBsaRows.reduce((acc: any[], row: any) => {
+      const rowMarket = String(row["Market"] || row["market"] || "-").trim();
+      const rowChannelName = String(row["TV Channel"] || row["tv channel"] || "").trim();
+      const isCritical = strictMandatorySet.has(rowChannelName.toLowerCase().replace(/[^a-z0-9]/g, "").trim());
+
+      let hasScheduledDays = false, hasNoScheduleDays = false, hasProcessingGapDays = false, isFullyInactiveAcrossRange = true;
+      selectedDateKeys.forEach(dateKey => {
+        const cellVal = row[dateKey];
+        if (cellVal === undefined || cellVal === null) return;
+        const dayStatus = String(cellVal).trim().toLowerCase();
+        if (!dayStatus.includes("inactive channel")) isFullyInactiveAcrossRange = false;
+        if (dayStatus.includes("processing gaps") || dayStatus.includes("missing")) hasProcessingGapDays = true;
+        else if (dayStatus.includes("no schedule") || dayStatus === "-" || dayStatus === "") hasNoScheduleDays = true;
+        else if (dayStatus.includes("scheduled") || dayStatus.includes("ok")) hasScheduledDays = true;
+      });
+
+      if (!isFullyInactiveAcrossRange) {
+        let assignedStatus = "OK", displayStatusLabel = "Scheduled OK";
+        if (hasProcessingGapDays) { assignedStatus = "GAPS"; displayStatusLabel = "Processing Gaps"; } 
+        else if (hasScheduledDays && hasNoScheduleDays) { assignedStatus = "PARTIAL"; displayStatusLabel = "Partial Schedule"; } 
+        else if (hasNoScheduleDays) { assignedStatus = "NOSCHED"; displayStatusLabel = "No Schedule"; }
+
+        if (filterCriticalOnly && !isCritical) return acc;
+        if (selectedMarkets.length > 0 && !selectedMarkets.includes(rowMarket)) return acc;
+        if (selectedChannels.length > 0 && !selectedChannels.includes(rowChannelName)) return acc;
+        if (selectedStatuses.length > 0 && !selectedStatuses.includes(assignedStatus)) return acc;
+
+        if (assignedStatus === "GAPS") gapsCount++; else if (assignedStatus === "PARTIAL") partialCount++; else if (assignedStatus === "NOSCHED") noSchedCount++; else okCount++;
+        acc.push({ tvChannel: rowChannelName, market: rowMarket, payType: String(row["Pay-Free TV"] || row["Pay/Free TV"] || row["payType"] || "-").trim() === "-" ? "FTA" : String(row["Pay-Free TV"] || row["Pay/Free TV"] || row["payType"] || "-").trim(), status: displayStatusLabel, statusKey: assignedStatus, rawRowData: row });
+      }
+      return acc;
+    }, []);
+
+    filteredMatrixRows.sort((alpha: any, beta: any) => {
+      const valA = String(["tvChannel", "market", "payType", "status"].includes(sortColumn) ? alpha[sortColumn] : alpha.rawRowData[sortColumn] || "").toLowerCase();
+      const valB = String(["tvChannel", "market", "payType", "status"].includes(sortColumn) ? beta[sortColumn] : beta.rawRowData[sortColumn] || "").toLowerCase();
+      return sortDirection === "ASC" ? valA.localeCompare(valB) : valB.localeCompare(valA);
+    });
+
+    return { total: filteredMatrixRows.length, gaps: gapsCount, partial: partialCount, noSched: noSchedCount, ok: okCount, tableRows: filteredMatrixRows, activeSortedDates: reverseChronologicalDates, activeRowChannelKeys: new Set(filteredMatrixRows.map((r:any) => r.tvChannel.toLowerCase().replace(/[^a-z0-9]/g, "").trim())) };
+  }, [dataState.rawBsaRows, dataState.rawDateColumns, startDate, endDate, filterCriticalOnly, selectedMarkets, selectedChannels, selectedStatuses, sortColumn, sortDirection, dataState.rawMandatoryAudit]);
+
+  const daywiseChronologicalMetricsDeck = useMemo(() => {
+    return [...processedDataDeck.activeSortedDates].reverse().map(dateKey => {
+      let gaps = 0, noSched = 0, ok = 0;
+      processedDataDeck.tableRows.forEach((row: any) => {
+        const statusText = String(row.rawRowData[dateKey]).trim().toLowerCase();
+        if (statusText.includes("inactive channel") || statusText === "undefined") return;
+        if (statusText.includes("processing gaps") || statusText.includes("missing")) gaps++;
+        else if (statusText.includes("no schedule") || statusText === "-" || statusText === "") noSched++;
+        else ok++;
+      });
+      const dayTotal = gaps + noSched + ok || 1;
+      return { dateLabel: dateKey, gapsPct: (gaps / dayTotal) * 100, noSchedPct: (noSched / dayTotal) * 100, okPct: (ok / dayTotal) * 100, rawCounts: { gaps, noSched, ok } };
+    });
+  }, [processedDataDeck.activeSortedDates, processedDataDeck.tableRows]);
+  
+  // Rule 7: Preserved Architecture for Target Monitor
+  const processedAuditTableDeckRows = useMemo(() => {
+    return dataState.rawMandatoryAudit.map((auditRow: any) => {
+      const isActiveNow = processedDataDeck.activeRowChannelKeys.has(String(auditRow.Channel || "").toLowerCase().replace(/[^a-z0-9]/g, "").trim());
+      return { channelLabelName: auditRow.Channel, foundInBsaFlag: isActiveNow ? "YES" : "NO", handshakeStatusLabel: isActiveNow ? "OK" : "INACTIVE" };
+    }).filter(item => item.channelLabelName.toLowerCase().includes(auditSearchQuery.toLowerCase())).sort((alpha, beta) => {
+      const comp = auditSortColumn === "channel" ? alpha.channelLabelName.localeCompare(beta.channelLabelName) : (auditSortColumn === "found" ? alpha.foundInBsaFlag.localeCompare(beta.foundInBsaFlag) : alpha.handshakeStatusLabel.localeCompare(beta.handshakeStatusLabel));
+      return auditSortDirection === "ASC" ? comp : -comp;
+    });
+  }, [dataState.rawMandatoryAudit, processedDataDeck.activeRowChannelKeys, auditSearchQuery, auditSortColumn, auditSortDirection]);
+
+  // AURA TABLE REDUCER
+  const processedAuraTableDeckRows = useMemo(() => {
+    return dataState.rawAuraAudit.map((auditRow: any) => {
+      const isActiveNow = processedDataDeck.activeRowChannelKeys.has(String(auditRow.Channel || "").toLowerCase().replace(/[^a-z0-9]/g, "").trim());
+      return { channelLabelName: auditRow.Channel, foundInBsaFlag: auditRow.Found || (isActiveNow ? "YES" : "NO"), handshakeStatusLabel: auditRow.Status || (isActiveNow ? "OK" : "MISSING") };
+    }).filter(item => item.channelLabelName.toLowerCase().includes(auraSearchQuery.toLowerCase())).sort((alpha, beta) => {
+      const comp = auraSortColumn === "channel" ? alpha.channelLabelName.localeCompare(beta.channelLabelName) : (auraSortColumn === "found" ? alpha.foundInBsaFlag.localeCompare(beta.foundInBsaFlag) : alpha.handshakeStatusLabel.localeCompare(beta.handshakeStatusLabel));
+      return auraSortDirection === "ASC" ? comp : -comp;
+    });
+  }, [dataState.rawAuraAudit, processedDataDeck.activeRowChannelKeys, auraSearchQuery, auraSortColumn, auraSortDirection]);
+
+  // 1. Independent Date Slicer for ROSCO
+  const roscoActiveSortedDates = useMemo(() => {
+    const startLimit = roscoStartDate ? new Date(roscoStartDate).setHours(0, 0, 0, 0) : 0;
+    const endLimit = roscoEndDate ? new Date(roscoEndDate).setHours(23, 59, 59, 999) : Infinity;
+    const filtered = dataState.rawDateColumns.filter(dateStr => {
+      const parts = dateStr.split("-");
+      if (parts.length !== 3) return false;
+      const targetTime = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0])).getTime();
+      return targetTime >= startLimit && targetTime <= endLimit;
+    });
+    return [...filtered].reverse();
+  }, [dataState.rawDateColumns, roscoStartDate, roscoEndDate]);
+
+  // 2. Updated Rosco Matrix Reducer
+  const sortedRoscoGridMatrix = useMemo(() => {
+    let baseList = [...reconciledRoscoRows];
+    
+    if (roscoSearchQuery.trim() !== "") {
+      baseList = baseList.filter(row => String(row.rosco_name || "").toLowerCase().includes(roscoSearchQuery.toLowerCase()) || String(row.country || "").toLowerCase().includes(roscoSearchQuery.toLowerCase()));
+    }
+
+    if (roscoSelectedMarkets.length > 0) {
+      baseList = baseList.filter(row => roscoSelectedMarkets.includes(String(row.country || "")));
+    }
+
+    if (roscoSelectedChannels.length > 0) {
+      baseList = baseList.filter(row => roscoSelectedChannels.includes(String(row.rosco_name || "")));
+    }
+
+    if (roscoSelectedStatuses.length > 0) {
+      baseList = baseList.filter(row => {
+        const matched = dataState.rawBsaRows.find(b => String(b["TV Channel"] || b["tv channel"] || "").toLowerCase().trim().replace(/[^a-z0-9]/g, "") === String(row.rosco_name || "").toLowerCase().trim().replace(/[^a-z0-9]/g, ""));
+        let code = "MISSING"; 
+        if (matched) {
+          const statusKey = String(matched["Final Status"] || matched["final status"] || "OK").toUpperCase();
+          if (statusKey.includes("GAPS")) code = "GAPS";
+          else if (statusKey.includes("NO SCHEDULE")) code = "NOSCHED";
+          else if (statusKey.includes("PARTIAL")) code = "PARTIAL";
+          else code = "OK";
+        }
+        return roscoSelectedStatuses.includes(code);
+      });
+    }
+
+    return baseList.sort((alpha, beta) => {
+      if (roscoSortColumn === "index") return roscoSortDirection === "ASC" ? alpha.index - beta.index : beta.index - alpha.index;
+      const getVal = (row: any) => {
+        if (roscoSortColumn === "rosco_name" || roscoSortColumn === "country" || roscoSortColumn === "is_in_aura") return String(row[roscoSortColumn] || "");
+        const matched = dataState.rawBsaRows.find(b => String(b["TV Channel"] || "").toLowerCase().trim().replace(/[^a-z0-9]/g, "") === String(row.rosco_name || "").toLowerCase().trim().replace(/[^a-z0-9]/g, ""));
+        if (roscoSortColumn === "found_bsa") return matched ? "YES" : "NO";
+        if (roscoSortColumn === "badge_code") return matched ? "Partial Schedule" : "Missing in Both"; 
+        return String(matched ? matched[roscoSortColumn] : "-").toLowerCase();
+      };
+      const valA = getVal(alpha), valB = getVal(beta);
+      return roscoSortDirection === "ASC" ? valA.localeCompare(valB) : valB.localeCompare(valA);
+    });
+  }, [reconciledRoscoRows, roscoSearchQuery, roscoSortColumn, roscoSortDirection, dataState.rawBsaRows, roscoSelectedMarkets, roscoSelectedChannels, roscoSelectedStatuses]);
+
+  // 3. Mini Quick-Stats Reducer
+  const roscoKpis = useMemo(() => {
+    let ok = 0, gaps = 0, partial = 0, noSched = 0, missing = 0;
+
+    sortedRoscoGridMatrix.forEach((row: any) => {
+      const matched = dataState.rawBsaRows.find(b => String(b["TV Channel"] || b["tv channel"] || "").toLowerCase().trim().replace(/[^a-z0-9]/g, "") === String(row.rosco_name || "").toLowerCase().trim().replace(/[^a-z0-9]/g, ""));
+      if (matched) {
+        const statusKey = String(matched["Final Status"] || matched["final status"] || "OK").toUpperCase();
+        if (statusKey.includes("GAPS")) gaps++;
+        else if (statusKey.includes("NO SCHEDULE")) noSched++;
+        else if (statusKey.includes("PARTIAL")) partial++;
+        else ok++;
+      } else {
+        missing++; // Found in AURA or Missing in Both
+      }
+    });
+
+    return { total: sortedRoscoGridMatrix.length, ok, gaps, partial, noSched, missing };
+  }, [sortedRoscoGridMatrix, dataState.rawBsaRows]);
+
+  // 4. Rosco Graph Reducer
+  const roscoChronologicalMetricsDeck = useMemo(() => {
+    if (sortedRoscoGridMatrix.length === 0) return [];
+    const chronologicalDateKeys = [...roscoActiveSortedDates].reverse();
+
+    return chronologicalDateKeys.map(dateKey => {
+      let gaps = 0, noSched = 0, ok = 0;
+      sortedRoscoGridMatrix.forEach((row: any) => {
+        const matchedBsaRow = dataState.rawBsaRows.find(b => String(b["TV Channel"] || b["tv channel"] || "").toLowerCase().trim().replace(/[^a-z0-9]/g, "") === String(row.rosco_name || "").toLowerCase().trim().replace(/[^a-z0-9]/g, ""));
+        if (!matchedBsaRow) { noSched++; return; }
+        const dayMetricValue = matchedBsaRow[dateKey] || "-";
+        const lowDay = String(dayMetricValue).toLowerCase();
+
+        if (lowDay.includes("gaps") || lowDay.includes("missing")) gaps++;
+        else if (lowDay.includes("no schedule") || dayMetricValue === "-" || dayMetricValue === "") noSched++;
+        else if (lowDay.includes("scheduled") || lowDay.includes("ok") || lowDay.includes("active")) ok++;
+        else noSched++;
+      });
+      const dayTotal = gaps + noSched + ok || 1;
+      return { 
+        dateLabel: dateKey, 
+        gapsPct: (gaps / dayTotal) * 100, 
+        noSchedPct: (noSched / dayTotal) * 100, 
+        okPct: (ok / dayTotal) * 100, 
+        rawCounts: { gaps, noSched, ok } 
+      };
+    });
+  }, [roscoActiveSortedDates, sortedRoscoGridMatrix, dataState.rawBsaRows]);
+  // 👆 END PASTE 👆
+  // PAGINATION MEMOIZATION - Strict Rule 5 applies 10 records per active view logic
+  const paginatedRows = useMemo(() => processedDataDeck.tableRows.slice((currentPage - 1) * rowsPerPage, (currentPage - 1) * rowsPerPage + rowsPerPage), [processedDataDeck.tableRows, currentPage]);
+  const totalPages = Math.ceil(processedDataDeck.tableRows.length / rowsPerPage) || 1;
+
+  const paginatedMandatoryRows = useMemo(() => processedAuditTableDeckRows.slice((mandatoryCurrentPage - 1) * rowsPerPage, (mandatoryCurrentPage - 1) * rowsPerPage + rowsPerPage), [processedAuditTableDeckRows, mandatoryCurrentPage]);
+  const mandatoryTotalPages = Math.ceil(processedAuditTableDeckRows.length / rowsPerPage) || 1;
+
+  const paginatedRoscoRows = useMemo(() => sortedRoscoGridMatrix.slice((roscoCurrentPage - 1) * rowsPerPage, (roscoCurrentPage - 1) * rowsPerPage + rowsPerPage), [sortedRoscoGridMatrix, roscoCurrentPage]);
+  const roscoTotalPages = Math.ceil(sortedRoscoGridMatrix.length / rowsPerPage) || 1;
+
+  // =========================================================================
+  // 🎨 RENDER LAYER (Tailwind + CSS Animations + Glassmorphism)
+  // =========================================================================
+  return (
+    <div className="min-h-screen bg-slate-50 dark:bg-[#0A0D14] p-4 lg:p-8 text-slate-900 dark:text-slate-100 transition-colors duration-500 flex flex-col justify-start items-center overflow-x-hidden font-sans selection:bg-indigo-500/30">
+      <div className="w-full max-w-[1440px] flex flex-col space-y-6">
+        
+        {/* HEADER BLOCK */}
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between w-full gap-4 pb-2">
+          <div className="flex items-center space-x-4 animate-in fade-in slide-in-from-left-8 duration-700 ease-out">
+            <div className="p-3 bg-white dark:bg-slate-900 rounded-2xl text-indigo-600 shadow-sm border border-slate-200/50 dark:border-slate-800"><Layers size={24} className="animate-pulse" style={{ animationDuration: '3s' }} /></div>
+            <div>
+              <h1 className="text-2xl font-black tracking-tight text-slate-900 dark:text-white bg-clip-text text-transparent bg-gradient-to-r from-slate-900 to-slate-500 dark:from-white dark:to-slate-400">BSA EARLY WARNING DASHBOARD</h1>
+              <p className="text-xs text-slate-500 font-mono font-semibold uppercase tracking-widest mt-1">BSA CHANNELS SCHEDULE TRACKER</p>
             </div>
           </div>
-        )}
 
-        {/* --- MAIN CONTENT AREA --- */}
-        <div className="flex-1 flex flex-col overflow-hidden relative">
-          <div className="p-4 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shadow-sm z-10 shrink-0">
-            <div className="flex justify-between items-center mb-4">
-              <div className="flex items-center gap-3">
-                {!showFilters && data && (
-                  <button onClick={() => setShowFilters(true)} className="p-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg hover:text-blue-600 transition-colors"><Filter size={16} className="text-slate-600 dark:text-slate-300" /></button>
-                )}
-                <h1 className="text-lg font-bold text-slate-800 dark:text-white flex items-center gap-2"><Layers className="text-blue-600 dark:text-blue-500 shrink-0" size={20}/> Early Warning Dashboard</h1>
+          <div className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl border border-slate-200/60 dark:border-slate-800/60 rounded-2xl px-5 py-3 shadow-sm flex items-center gap-5 transition-all hover:shadow-md hover:border-slate-300 dark:hover:border-slate-700 duration-500 animate-in fade-in slide-in-from-right-8">
+            <div className="flex items-center space-x-3">
+              <div className={`flex h-6 w-6 rounded-full items-center justify-center shrink-0 transition-colors duration-500 ${dataState.status === "ONLINE" ? "bg-emerald-500/10 text-emerald-600" : (dataState.status === "LIMIT_EXCEEDED" ? "bg-rose-500/10 text-rose-600" : "bg-slate-500/10 text-slate-600")}`}>
+                {dataState.status === "ONLINE" ? <CheckCircle2 size={14} /> : (dataState.status === "LIMIT_EXCEEDED" ? <XCircle size={14} /> : <Activity size={14} />)}
               </div>
-              <div className="flex gap-2 items-center flex-wrap justify-end">
-                <input type="file" id="bsa" className="hidden" onChange={(e) => setBsaFile(e.target.files?.[0] || null)} />
-                <label htmlFor="bsa" className="flex items-center justify-center gap-1.5 px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-transparent dark:border-slate-700 hover:border-emerald-300 dark:hover:border-emerald-500 rounded-lg text-xs font-bold cursor-pointer transition-all min-w-[160px]">
-                  <FileSpreadsheet size={14} className={bsaFile ? "text-emerald-500" : "text-slate-400"} />
-                  <span className="truncate max-w-[200px]">{bsaFile ? bsaFile.name : '1. Upload BSA (Mandatory)'}</span>
-                </label>
-                
-                <input type="file" id="rosco" className="hidden" onChange={(e) => setRoscoFile(e.target.files?.[0] || null)} />
-                <label htmlFor="rosco" className="flex items-center justify-center gap-1.5 px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-transparent dark:border-slate-700 hover:border-purple-300 dark:hover:border-purple-500 rounded-lg text-xs font-bold cursor-pointer transition-all min-w-[160px]">
-                  <Globe size={14} className={roscoFile ? "text-purple-500" : "text-slate-400"} />
-                  <span className="truncate max-w-[200px]">{roscoFile ? roscoFile.name : '2. Upload ROSCO (Optional)'}</span>
-                </label>
-                
-                <button onClick={handleUpload} disabled={!bsaFile || isApiLoading || isExporting} className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg text-xs font-bold shadow-md transition-all flex items-center gap-2 disabled:opacity-50 shrink-0">
-                  {(isApiLoading || isExporting) ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />} 
-                  {(isApiLoading || isExporting) ? "Processing..." : "Run"}
-                </button>
-                
-                {data && (
-                  <button onClick={handleDownload} className="p-2 border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-lg transition-colors shadow-sm shrink-0" title="Download Export">
-                    <Download size={18}/>
-                  </button>
-                )}
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest font-mono">GSHEETS FEED NODE</span>
+                  {dataState.status === "ONLINE" && <span className="bg-slate-100 dark:bg-slate-800 font-mono text-[9px] px-2 py-0.5 rounded text-slate-600 dark:text-slate-300 font-bold">{dataState.responseTimeMs}ms</span>}
+                </div>
+                <div className="text-sm font-black tracking-tight leading-none text-slate-800 dark:text-slate-200">
+                  {dataState.status === "ONLINE" ? <p>Database Connected <span className="text-slate-400 dark:text-slate-500 font-medium font-sans ml-1 text-xs">Refreshed: {dataState.extractedFileDate}</span></p> : (dataState.status === "LIMIT_EXCEEDED" ? <p className="text-rose-600 dark:text-rose-400">Stack Bounds Overridden</p> : <p className="text-slate-500 dark:text-slate-400">Database Offline</p>)}
+                </div>
               </div>
             </div>
+            <button onClick={fetchCloudSyncStatus} disabled={isRefreshing} className="p-2 bg-slate-50 hover:bg-slate-100 active:scale-90 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-500 rounded-xl border border-slate-200/60 dark:border-slate-700 transition-all duration-300 shadow-sm"><RefreshCw size={14} className={isRefreshing ? "animate-spin text-indigo-500" : ""} /></button>
+          </div>
+        </div>
 
-            {/* SYNCED 5-CARD STATS GRID */}
-            {stats && (
-              <div className="grid grid-cols-5 gap-3">
-                <MetricCard label="Total Channels" value={stats.total} color={COLORS.TOTAL} />
-                <MetricCard label="Processing Gaps" value={stats.gaps} color={COLORS.GAPS} />
-                <MetricCard label="Partial Schedule" value={stats.partial} color={COLORS.PARTIAL} />
-                <MetricCard label="No Schedule" value={stats.noSchedule} color={COLORS.NO_SCHEDULE} />
-                <MetricCard label="Scheduled OK" value={stats.ok} color={COLORS.OK} />
+        {/* METRIC CARD BAR SYSTEM */}
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 w-full">
+          {[
+            { title: "Total Channels", value: processedDataDeck.total, bg: "bg-white dark:bg-slate-900", iconColor: "text-indigo-500", badgeBg: "bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-300", icon: <Layers size={14} /> },
+            { title: "Processing Gaps", value: processedDataDeck.gaps, bg: "bg-white dark:bg-slate-900", iconColor: "text-rose-500", badgeBg: "bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400", icon: <AlertCircle size={14} /> },
+            { title: "Partial Schedule", value: processedDataDeck.partial, bg: "bg-white dark:bg-slate-900", iconColor: "text-blue-500", badgeBg: "bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-300", icon: <Activity size={14} /> },
+            { title: "No Schedule", value: processedDataDeck.noSched, bg: "bg-white dark:bg-slate-900", iconColor: "text-amber-500", badgeBg: "bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300", icon: <XCircle size={14} /> },
+            { title: "Scheduled OK", value: processedDataDeck.ok, bg: "bg-white dark:bg-slate-900", iconColor: "text-emerald-500", badgeBg: "bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300", icon: <CheckCircle2 size={14} /> },
+          ].map((kpi, idx) => (
+            <div key={idx} className={`group ${kpi.bg} border border-slate-200/60 dark:border-slate-800/60 rounded-3xl p-5 shadow-sm flex flex-col justify-between relative overflow-hidden transition-all duration-500 hover:shadow-md hover:-translate-y-1 animate-in fade-in slide-in-from-bottom-8`} style={{ animationDelay: `${idx * 100}ms`, animationFillMode: 'both' }}>
+              <div className={`absolute -right-4 -bottom-4 opacity-5 pointer-events-none transition-transform duration-700 group-hover:scale-150 group-hover:rotate-12 ${kpi.iconColor}`}>
+                {React.cloneElement(kpi.icon, { size: 80 } as any)}
               </div>
+              <div className="space-y-3 relative z-10">
+                <span className={`px-2.5 py-1 text-[10px] font-black uppercase tracking-widest rounded-lg flex w-max items-center gap-1.5 ${kpi.badgeBg}`}>{kpi.icon} {kpi.title}</span>
+                <div className="text-4xl font-black text-slate-800 dark:text-slate-100 font-mono tracking-tight pt-1">{dataState.status === "ONLINE" ? kpi.value : "—"}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* --- UI MASTER: SEARCHABLE POP-OVER FILTER PANELS --- */}
+        <div className="w-full bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-800/60 rounded-xl p-5 space-y-4 shadow-sm">
+          <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+            <div className="flex items-center space-x-2.5 text-slate-800 dark:text-slate-200">
+              <div className="p-1.5 bg-indigo-50 dark:bg-indigo-500/10 rounded-lg text-indigo-500"><Filter size={16} /></div>
+              <h3 className="text-sm font-black uppercase tracking-wider font-mono">FILTER PANE</h3>
+            </div>
+            <button type="button" onClick={handleResetFilters} className="flex items-center gap-2 px-4 py-2 bg-slate-50 hover:bg-slate-100 active:scale-95 dark:bg-slate-800 dark:hover:bg-slate-700 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-300 border border-slate-200/60 dark:border-slate-700/60 transition-all duration-300"><RotateCcw size={13} /> Reset Filters</button>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-5 items-end text-xs">
+            {/* Start Date */}
+            <div className="space-y-2 relative" ref={startCalRef}>
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400 flex items-center gap-1.5"><CalendarIcon size={12} className="text-indigo-400"/> Start Date</label>
+              <div onClick={() => { setStartCalOpen(!startCalOpen); setEndCalOpen(false); }} className="w-full bg-slate-50 hover:bg-slate-100 dark:bg-slate-950 dark:hover:bg-slate-900 border border-slate-200/60 dark:border-slate-800/80 px-4 py-2.5 rounded-xl font-bold text-slate-700 dark:text-slate-300 flex items-center justify-between cursor-pointer select-none transition-colors border-l-4 border-l-indigo-400">
+                <span className="truncate">{formattedLabelDate(startDate)}</span><ChevronDown size={14} className="text-slate-400" />
+              </div>
+              {startCalOpen && <div className="absolute top-[110%] left-0 z-50"><ModernCalendar initialDate={startDate || new Date()} selectedValue={startDate} onSelect={(date) => { setStartDate(date); setStartCalOpen(false); }} /></div>}
+            </div>
+
+            {/* End Date */}
+            <div className="space-y-2 relative" ref={endCalRef}>
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400 flex items-center gap-1.5"><CalendarIcon size={12} className="text-rose-400"/> End Date</label>
+              <div onClick={() => { setEndCalOpen(!endCalOpen); setStartCalOpen(false); }} className="w-full bg-slate-50 hover:bg-slate-100 dark:bg-slate-950 dark:hover:bg-slate-900 border border-slate-200/60 dark:border-slate-800/80 px-4 py-2.5 rounded-xl font-bold text-slate-700 dark:text-slate-300 flex items-center justify-between cursor-pointer select-none transition-colors border-l-4 border-l-rose-400">
+                <span className="truncate">{formattedLabelDate(endDate)}</span><ChevronDown size={14} className="text-slate-400" />
+              </div>
+              {endCalOpen && <div className="absolute top-[110%] left-0 z-50"><ModernCalendar initialDate={endDate || new Date()} selectedValue={endDate} onSelect={(date) => { setEndDate(date); setEndCalOpen(false); }} /></div>}
+            </div>
+
+            {/* Market */}
+            <div className="space-y-2 relative" ref={marketRef}>
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400">Market</label>
+              <div onClick={() => setMarketOpen(!marketOpen)} className="w-full bg-slate-50 hover:bg-slate-100 dark:bg-slate-950 dark:hover:bg-slate-900 border border-slate-200/60 dark:border-slate-800/80 px-4 py-2.5 rounded-xl font-bold text-slate-700 dark:text-slate-300 flex items-center justify-between cursor-pointer select-none transition-colors"><span className="truncate">{selectedMarkets.length === 0 ? "All Markets" : `${selectedMarkets.length} Selected`}</span><ChevronDown size={14} className="text-slate-400" /></div>
+              {marketOpen && (
+                <div className="absolute top-[110%] left-0 w-full min-w-[200px] bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border border-slate-200/60 dark:border-slate-800/60 rounded-2xl shadow-xl z-50 p-2 space-y-2 max-h-64 flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                  <div className="flex items-center bg-slate-50 dark:bg-slate-950 border border-slate-200/60 dark:border-slate-800 rounded-xl px-3 py-2 shrink-0"><Search size={14} className="text-slate-400 mr-2" /><input type="text" placeholder="Search..." value={marketSearch} onChange={(e) => setMarketSearch(e.target.value)} className="bg-transparent w-full text-xs font-medium outline-none text-slate-700 dark:text-slate-300 placeholder:text-slate-400" /></div>
+                  <div className="overflow-y-auto flex-1 space-y-1 p-1 scrollbar-hide">{filteredMarketsList.map((m: string) => (
+                    <div key={m} onClick={() => handleToggleSelection(m, selectedMarkets, setSelectedMarkets)} className="flex items-center space-x-3 px-2 py-2 hover:bg-slate-50 dark:hover:bg-slate-800/50 rounded-xl cursor-pointer group transition-colors">
+                      <div className={`w-4 h-4 rounded-md border flex items-center justify-center transition-all duration-300 ${selectedMarkets.includes(m) ? "bg-indigo-500 border-indigo-500 text-white scale-110 shadow-sm shadow-indigo-500/30" : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900"}`}>{selectedMarkets.includes(m) && <Check size={12} strokeWidth={4} />}</div>
+                      <span className="font-medium text-slate-700 dark:text-slate-300 truncate">{m}</span>
+                    </div>
+                  ))}</div>
+                </div>
+              )}
+            </div>
+
+            {/* TV Channel */}
+            <div className="space-y-2 relative" ref={channelRef}>
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400">TV Channel</label>
+              <div onClick={() => setChannelOpen(!channelOpen)} className="w-full bg-slate-50 hover:bg-slate-100 dark:bg-slate-950 dark:hover:bg-slate-900 border border-slate-200/60 dark:border-slate-800/80 px-4 py-2.5 rounded-xl font-bold text-slate-700 dark:text-slate-300 flex items-center justify-between cursor-pointer select-none transition-colors"><span className="truncate">{selectedChannels.length === 0 ? "All Channels" : `${selectedChannels.length} Selected`}</span><ChevronDown size={14} className="text-slate-400" /></div>
+              {channelOpen && (
+                <div className="absolute top-[110%] left-0 w-full min-w-[200px] bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border border-slate-200/60 dark:border-slate-800/60 rounded-2xl shadow-xl z-50 p-2 space-y-2 max-h-64 flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                  <div className="flex items-center bg-slate-50 dark:bg-slate-950 border border-slate-200/60 dark:border-slate-800 rounded-xl px-3 py-2 shrink-0"><Search size={14} className="text-slate-400 mr-2" /><input type="text" placeholder="Search..." value={channelSearch} onChange={(e) => setChannelSearch(e.target.value)} className="bg-transparent w-full text-xs font-medium outline-none text-slate-700 dark:text-slate-300 placeholder:text-slate-400" /></div>
+                  <div className="overflow-y-auto flex-1 space-y-1 p-1 scrollbar-hide">{filteredChannelsList.map((c: string) => (
+                    <div key={c} onClick={() => handleToggleSelection(c, selectedChannels, setSelectedChannels)} className="flex items-center space-x-3 px-2 py-2 hover:bg-slate-50 dark:hover:bg-slate-800/50 rounded-xl cursor-pointer group transition-colors">
+                      <div className={`w-4 h-4 rounded-md border flex items-center justify-center transition-all duration-300 ${selectedChannels.includes(c) ? "bg-indigo-500 border-indigo-500 text-white scale-110 shadow-sm shadow-indigo-500/30" : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900"}`}>{selectedChannels.includes(c) && <Check size={12} strokeWidth={4} />}</div>
+                      <span className="font-medium text-slate-700 dark:text-slate-300 truncate">{c}</span>
+                    </div>
+                  ))}</div>
+                </div>
+              )}
+            </div>
+
+            {/* Status */}
+            <div className="space-y-2 relative" ref={statusRef}>
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400">Status</label>
+              <div onClick={() => setStatusOpen(!statusOpen)} className="w-full bg-slate-50 hover:bg-slate-100 dark:bg-slate-950 dark:hover:bg-slate-900 border border-slate-200/60 dark:border-slate-800/80 px-4 py-2.5 rounded-xl font-bold text-slate-700 dark:text-slate-300 flex items-center justify-between cursor-pointer select-none transition-colors"><span className="truncate">{selectedStatuses.length === 0 ? "All Statuses" : `${selectedStatuses.length} Selected`}</span><ChevronDown size={14} className="text-slate-400" /></div>
+              {statusOpen && (
+                <div className="absolute top-[110%] left-0 w-full min-w-[200px] bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border border-slate-200/60 dark:border-slate-800/60 rounded-2xl shadow-xl z-50 p-2 space-y-2 max-h-64 flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                  <div className="flex items-center bg-slate-50 dark:bg-slate-950 border border-slate-200/60 dark:border-slate-800 rounded-xl px-3 py-2 shrink-0"><Search size={14} className="text-slate-400 mr-2" /><input type="text" placeholder="Search..." value={statusSearch} onChange={(e) => setStatusSearch(e.target.value)} className="bg-transparent w-full text-xs font-medium outline-none text-slate-700 dark:text-slate-300 placeholder:text-slate-400" /></div>
+                  <div className="overflow-y-auto flex-1 space-y-1 p-1 scrollbar-hide">{filteredStatusesList.map((s: MetaStatusItem) => (
+                    <div key={s.id} onClick={() => handleToggleSelection(s.id, selectedStatuses, setSelectedStatuses)} className="flex items-center space-x-3 px-2 py-2 hover:bg-slate-50 dark:hover:bg-slate-800/50 rounded-xl cursor-pointer group transition-colors">
+                      <div className={`w-4 h-4 rounded-md border flex items-center justify-center transition-all duration-300 ${selectedStatuses.includes(s.id) ? "bg-indigo-500 border-indigo-500 text-white scale-110 shadow-sm shadow-indigo-500/30" : "border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900"}`}>{selectedStatuses.includes(s.id) && <Check size={12} strokeWidth={4} />}</div>
+                      <span className="font-medium text-slate-700 dark:text-slate-300 truncate">{s.label}</span>
+                    </div>
+                  ))}</div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="pt-2 flex items-center">
+            <button type="button" onClick={() => setFilterCriticalOnly(!filterCriticalOnly)} className="flex items-center space-x-2.5 group cursor-pointer focus:outline-none select-none text-sm transition-all active:scale-95 w-max">
+              <div className={`w-5 h-5 rounded-lg border transition-all duration-300 flex items-center justify-center ${filterCriticalOnly ? "bg-indigo-600 border-indigo-600 text-white shadow-md shadow-indigo-600/30 scale-110" : "border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 group-hover:border-indigo-400"}`}>{filterCriticalOnly && <Check size={14} strokeWidth={3} />}</div>
+              <span className="font-bold text-slate-600 dark:text-slate-300 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">Filter Critical Channels Only</span>
+            </button>
+          </div>
+        </div>
+
+        {/* --- UI MASTER: MATRIX DATA GRID CONTAINER --- */}
+        <div className="w-full bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800/60 rounded-3xl overflow-hidden shadow-sm flex flex-col animate-in slide-in-from-bottom-8 duration-500" style={{ animationDelay: "500ms", animationFillMode: "both" }}>
+          <div className="p-5 border-b border-slate-100 dark:border-slate-800/80 flex items-center justify-between bg-slate-50/50 dark:bg-slate-900/50">
+            <div className="flex items-center space-x-3 text-slate-800 dark:text-slate-200">
+              <div className="p-1.5 bg-emerald-50 dark:bg-emerald-500/10 rounded-lg text-emerald-600"><FileSpreadsheet size={16} /></div>
+              <h2 className="text-sm font-black uppercase tracking-wider font-mono">Consolidated BSA Table</h2>
+            </div>
+            
+            <div className="flex items-center space-x-4 w-full sm:w-auto justify-end">
+              <span className="font-mono text-[10px] font-black uppercase tracking-wider px-3 py-1.5 rounded-lg text-slate-500 dark:text-slate-400 border border-slate-200/60 dark:border-slate-700/60 bg-white dark:bg-slate-800">
+                Filtered: <span className="text-indigo-600 dark:text-indigo-400">{processedDataDeck.total}</span> Rows
+              </span>
+              <button type="button" onClick={handleExportToGoogleSheets} disabled={isExporting || !processedDataDeck.tableRows.length} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white rounded-xl text-xs font-bold shadow-md shadow-indigo-600/20 active:scale-95 transition-all cursor-pointer disabled:cursor-not-allowed select-none">
+                <FileSpreadsheet size={14} className={isExporting ? "animate-pulse" : ""} /> {isExporting ? "Compiling..." : "Download Excel"}
+              </button>
+            </div>
+          </div>
+              
+          <div className="w-full overflow-x-auto overflow-y-auto max-h-[500px] relative select-none scrollbar-hide">
+            <table className="w-full table-fixed border-separate border-spacing-0 text-left">
+              <thead>
+                <tr className="bg-slate-50 dark:bg-slate-950 text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-widest font-mono">
+                  <th className="sticky top-0 left-0 bg-slate-50 dark:bg-slate-950 border-b border-r border-slate-200/60 dark:border-slate-800/80 p-4 w-[70px] z-40 shadow-sm text-center">SR NO</th>
+                  <th onClick={() => handleSortTrigger("tvChannel")} className="sticky top-0 left-[70px] bg-slate-50 dark:bg-slate-950 border-b border-r border-slate-200/60 dark:border-slate-800/80 p-4 w-[220px] z-40 cursor-pointer select-none hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shadow-sm">
+                    <div className="flex items-center justify-between"><span>TV Channel</span>{renderSortIndicatorIcons(sortColumn, "tvChannel", sortDirection)}</div>
+                  </th>
+                  <th onClick={() => handleSortTrigger("market")} className="sticky top-0 left-[290px] bg-slate-50 dark:bg-slate-950 border-b border-r border-slate-200/60 dark:border-slate-800/80 p-4 w-[160px] z-40 cursor-pointer select-none hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shadow-sm">
+                    <div className="flex items-center justify-between"><span>Market</span>{renderSortIndicatorIcons(sortColumn, "market", sortDirection)}</div>
+                  </th>
+                  <th onClick={() => handleSortTrigger("payType")} className="sticky top-0 left-[450px] bg-slate-50 dark:bg-slate-950 border-b border-r border-slate-200/60 dark:border-slate-800/80 p-4 w-[120px] z-40 cursor-pointer select-none hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shadow-sm">
+                    <div className="flex items-center justify-between"><span>Pay/Free</span>{renderSortIndicatorIcons(sortColumn, "payType", sortDirection)}</div>
+                  </th>
+                  <th onClick={() => handleSortTrigger("status")} className="sticky top-0 left-[570px] bg-slate-50 dark:bg-slate-950 border-b border-r border-slate-200/60 dark:border-slate-800/80 p-4 w-[160px] z-40 shadow-[4px_0_12px_-4px_rgba(0,0,0,0.1)] cursor-pointer select-none hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+                    <div className="flex items-center justify-between"><span>Status</span>{renderSortIndicatorIcons(sortColumn, "status", sortDirection)}</div>
+                  </th>
+                  {processedDataDeck.activeSortedDates.map(dateKey => (
+                    <th key={dateKey} className="sticky top-0 bg-slate-50 dark:bg-slate-950 p-4 border-b border-r border-slate-200/60 dark:border-slate-800/80 text-center font-bold text-slate-600 dark:text-slate-300 w-[140px] whitespace-nowrap z-20 shadow-sm">{dateKey}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800/40 text-xs font-semibold">
+                {paginatedRows.map((row: any, index: number) => {
+                  const globalRowIndex = (currentPage - 1) * rowsPerPage + index + 1;
+                  let badgeColorClasses = "text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/20";
+                  if (row.statusKey === "GAPS") badgeColorClasses = "text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/20 font-black";
+                  else if (row.statusKey === "PARTIAL") badgeColorClasses = "text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-500/20";
+                  else if (row.statusKey === "NOSCHED") badgeColorClasses = "text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20";
+
+                  return (
+                    <tr key={index} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/50 transition-colors group animate-in fade-in slide-in-from-bottom-2" style={{ animationDelay: `${index * 30}ms`, animationFillMode: "both" }}>
+                      <td className="sticky left-0 bg-white dark:bg-slate-900 border-r border-b border-slate-100 dark:border-slate-800/60 p-4 font-mono text-slate-400 font-bold z-30 group-hover:bg-slate-50 dark:group-hover:bg-slate-800 transition-colors text-center">
+                        {String(globalRowIndex).padStart(2, "0")}
+                      </td>
+                      <td className="sticky left-[70px] bg-white dark:bg-slate-900 border-r border-b border-slate-100 dark:border-slate-800/60 p-4 font-black text-slate-800 dark:text-white z-30 group-hover:bg-slate-50 dark:group-hover:bg-slate-800 transition-colors truncate whitespace-nowrap overflow-hidden" title={row.tvChannel}>
+                        {row.tvChannel}
+                      </td>
+                      <td className="sticky left-[290px] bg-white dark:bg-slate-900 border-r border-b border-slate-100 dark:border-slate-800/60 p-4 text-slate-600 dark:text-slate-300 z-30 group-hover:bg-slate-50 dark:group-hover:bg-slate-800 transition-colors truncate whitespace-nowrap overflow-hidden">
+                        {row.market}
+                      </td>
+                      <td className="sticky left-[450px] bg-white dark:bg-slate-900 border-r border-b border-slate-100 dark:border-slate-800/60 p-4 font-mono font-bold text-[10px] text-slate-500 dark:text-slate-400 uppercase z-30 group-hover:bg-slate-50 dark:group-hover:bg-slate-800 transition-colors text-center">{row.payType}</td>
+                      <td className="sticky left-[570px] bg-white dark:bg-slate-900 border-r border-b border-slate-200/60 dark:border-slate-800/80 p-4 z-30 group-hover:bg-slate-50 dark:group-hover:bg-slate-800 transition-colors shadow-[4px_0_12px_-4px_rgba(0,0,0,0.05)] text-center">
+                        <span className={`px-2.5 py-1 text-[10px] uppercase font-mono tracking-wider rounded-lg border ${badgeColorClasses}`}>{row.status}</span>
+                      </td>
+
+                      {processedDataDeck.activeSortedDates.map((dateKey: string) => {
+                          const cellVal = row.rawRowData[dateKey] || row.rawRowData[dateKey.toLowerCase()] || "-";
+                        const lowCell = String(cellVal).toLowerCase();
+                        
+                        let cellTextColor = "text-slate-500 dark:text-slate-400";
+                        if (lowCell.includes("processing gaps") || lowCell.includes("missing")) cellTextColor = "text-rose-600 dark:text-rose-400 font-black";
+                        else if (lowCell.includes("no schedule")) cellTextColor = "text-amber-600 dark:text-amber-500 font-bold";
+                        else if (lowCell.includes("scheduled")) cellTextColor = "text-emerald-600 dark:text-emerald-400 font-bold";
+                        else if (lowCell.includes("inactive")) cellTextColor = "text-slate-300 dark:text-slate-600 line-through font-normal";
+
+                        return (
+                          <td key={dateKey} className={`p-4 border-r border-b border-slate-100 dark:border-slate-800/40 text-center truncate whitespace-nowrap max-w-[140px] overflow-hidden transition-all ${cellTextColor}`} title={String(cellVal)}>
+                            {String(cellVal)}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="p-4 bg-slate-50/80 dark:bg-slate-950/80 border-t border-slate-200/60 dark:border-slate-800/80 flex items-center justify-between text-xs font-mono font-bold text-slate-500 dark:text-slate-400">
+            <span>Showing {processedDataDeck.total === 0 ? 0 : (currentPage - 1) * rowsPerPage + 1}–{Math.min(currentPage * rowsPerPage, processedDataDeck.tableRows.length)} of {processedDataDeck.tableRows.length}</span>
+            <div className="flex items-center space-x-1.5">
+              <button type="button" onClick={() => setCurrentPage(1)} disabled={currentPage === 1} className="p-2 bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-700 rounded-xl hover:bg-slate-50 active:scale-90 disabled:opacity-50 disabled:scale-100 transition-all"><ChevronFirst size={14} /></button>
+              <button type="button" onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))} disabled={currentPage === 1} className="p-2 bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-700 rounded-xl hover:bg-slate-50 active:scale-90 disabled:opacity-50 disabled:scale-100 transition-all"><ChevronLeft size={14} /></button>
+              <span className="px-4 py-1.5 bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-700 rounded-xl text-slate-800 dark:text-slate-200">Page {currentPage} of {totalPages}</span>
+              <button type="button" onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))} disabled={currentPage === totalPages} className="p-2 bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-700 rounded-xl hover:bg-slate-50 active:scale-90 disabled:opacity-50 disabled:scale-100 transition-all"><ChevronRight size={14} /></button>
+              <button type="button" onClick={() => setCurrentPage(totalPages)} disabled={currentPage === totalPages} className="p-2 bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-700 rounded-xl hover:bg-slate-50 active:scale-90 disabled:opacity-50 disabled:scale-100 transition-all"><ChevronLast size={14} /></button>
+            </div>
+          </div>
+        </div>
+
+        {/* --- 📊 ISOLATED DAY-WISE CHRONOLOGICAL MATRIX STACKED TIMELINE MONITOR --- */}
+        <div className="animate-in fade-in slide-in-from-bottom-8 duration-500" style={{ animationDelay: "600ms", animationFillMode: "both" }}>
+          <TimelineSlicer data={daywiseChronologicalMetricsDeck} title="DAY WISE BSA STATUS GRAPH" icon={<BarChart3 size={16} />} colorTheme="indigo" />
+        </div>
+
+        {/* --- 🛡️ MANDATORY TARGETS CHECKLIST MATRIX GRID --- */}
+        <div className="w-full bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800/60 rounded-3xl shadow-sm overflow-hidden p-6 lg:p-8 space-y-6 animate-in slide-in-from-bottom-8 duration-500" style={{ animationDelay: "700ms", animationFillMode: "both" }}>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-100 dark:border-slate-800/80 pb-4 gap-4">
+            <div className="flex items-center space-x-3">
+              <div className="p-2 bg-rose-50 dark:bg-rose-500/10 text-rose-600 rounded-xl"><FolderGit2 size={18} /></div>
+              <h2 className="text-sm font-black uppercase tracking-wider font-mono">MANDATORY CHANNELS<span className="text-slate-400 font-medium tracking-normal ml-2">({processedAuditTableDeckRows.length} Channels)</span></h2>
+            </div>
+            <div className="flex items-center space-x-3 w-full sm:w-auto">
+              <div className="relative w-full sm:w-64">
+                <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
+                <input type="text" placeholder="Search checklist..." value={auditSearchQuery} onChange={(e) => { setAuditSearchQuery(e.target.value); setMandatoryCurrentPage(1); }} className="w-full text-xs pl-9 pr-4 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200/60 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 transition-all" />
+              </div>
+              <button type="button" onClick={handleExportMandatoryChecklist} disabled={isExportingMandatory || !processedAuditTableDeckRows.length} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-md shadow-indigo-600/20 active:scale-95 transition-all shrink-0">
+                <FileSpreadsheet size={14} /> Download
+              </button>
+            </div>
+          </div>
+
+          <div className="w-full overflow-x-auto rounded-2xl border border-slate-200/60 dark:border-slate-800/80 max-h-[300px] scrollbar-hide">
+            <table className="w-full text-sm text-left border-separate border-spacing-0 select-none">
+              <thead className="bg-slate-50 dark:bg-slate-950 font-mono text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-widest sticky top-0 z-20 border-b">
+                <tr>
+                  <th className="p-4 border-r border-b border-slate-200/60 dark:border-slate-800/80 w-20 text-center bg-slate-50 dark:bg-slate-950">SR NO</th>
+                  <th onClick={() => handleAuditSortTrigger("channel")} className="p-4 border-r border-b border-slate-200/60 dark:border-slate-800/80 cursor-pointer select-none hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors bg-slate-50 dark:bg-slate-950"><div className="flex items-center justify-between"><span>Channel</span>{renderSortIndicatorIcons(auditSortColumn, "channel", auditSortDirection)}</div></th>
+                  <th onClick={() => handleAuditSortTrigger("status")} className="p-4 border-b border-slate-200/60 dark:border-slate-800/80 text-center w-56 cursor-pointer select-none hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors bg-slate-50 dark:bg-slate-950"><div className="flex items-center justify-center"><span>Channel Status</span>{renderSortIndicatorIcons(auditSortColumn, "status", auditSortDirection)}</div></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800/40 font-medium text-xs">
+                {paginatedMandatoryRows.map((auditRow: any, auditIdx: number) => {
+                  const isFoundActive = auditRow.foundInBsaFlag === "YES";
+                  const globalIdx = (mandatoryCurrentPage - 1) * rowsPerPage + auditIdx + 1;
+                  return (
+                    <tr key={auditIdx} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors animate-in fade-in" style={{ animationDelay: `${auditIdx * 20}ms`, animationFillMode: "both" }}>
+                      <td className="p-3 border-r border-b border-slate-100 dark:border-slate-800/40 text-center font-mono text-slate-400">{String(globalIdx).padStart(3, "0")}</td>
+                      <td className="p-3 border-r border-b border-slate-100 dark:border-slate-800/40 text-slate-800 dark:text-slate-200 font-bold px-6">{auditRow.channelLabelName}</td>
+                      <td className="p-3 border-b border-slate-100 dark:border-slate-800/40 text-center">
+                        <span className={`px-3 py-1 rounded-md text-[10px] font-mono font-black border ${isFoundActive ? "bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 border-emerald-200 dark:border-emerald-500/20" : "bg-rose-50 dark:bg-rose-500/10 text-rose-600 border-rose-200 dark:border-rose-500/20"}`}>
+                          {auditRow.handshakeStatusLabel}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          
+          {/* Table 2 Pagination */}
+          <div className="p-2 flex items-center justify-between text-xs font-mono font-bold text-slate-500 dark:text-slate-400">
+            <span>Showing {processedAuditTableDeckRows.length === 0 ? 0 : (mandatoryCurrentPage - 1) * rowsPerPage + 1}–{Math.min(mandatoryCurrentPage * rowsPerPage, processedAuditTableDeckRows.length)} of {processedAuditTableDeckRows.length}</span>
+            <div className="flex items-center space-x-1.5">
+              <button type="button" onClick={() => setMandatoryCurrentPage(1)} disabled={mandatoryCurrentPage === 1} className="p-2 bg-slate-50 dark:bg-slate-800 border border-slate-200/60 dark:border-slate-700 rounded-xl hover:bg-slate-100 active:scale-90 disabled:opacity-50 transition-all"><ChevronFirst size={14} /></button>
+              <button type="button" onClick={() => setMandatoryCurrentPage(prev => Math.max(prev - 1, 1))} disabled={mandatoryCurrentPage === 1} className="p-2 bg-slate-50 dark:bg-slate-800 border border-slate-200/60 dark:border-slate-700 rounded-xl hover:bg-slate-100 active:scale-90 disabled:opacity-50 transition-all"><ChevronLeft size={14} /></button>
+              <span className="px-3">Page {mandatoryCurrentPage} of {mandatoryTotalPages}</span>
+              <button type="button" onClick={() => setMandatoryCurrentPage(prev => Math.min(prev + 1, mandatoryTotalPages))} disabled={mandatoryCurrentPage === mandatoryTotalPages} className="p-2 bg-slate-50 dark:bg-slate-800 border border-slate-200/60 dark:border-slate-700 rounded-xl hover:bg-slate-100 active:scale-90 disabled:opacity-50 transition-all"><ChevronRight size={14} /></button>
+              <button type="button" onClick={() => setMandatoryCurrentPage(mandatoryTotalPages)} disabled={mandatoryCurrentPage === mandatoryTotalPages} className="p-2 bg-slate-50 dark:bg-slate-800 border border-slate-200/60 dark:border-slate-700 rounded-xl hover:bg-slate-100 active:scale-90 disabled:opacity-50 transition-all"><ChevronLast size={14} /></button>
+            </div>
+          </div>
+        </div>
+
+        
+        {/* ========================================================================= */}
+        {/* ✅ REPOSITIONED WORKSPACE: INJECTED PERSISTENTLY BELOW CHARTS (NO TABS)  */}
+        {/* ========================================================================= */}
+        <div className="w-full bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800/60 rounded-3xl shadow-sm p-6 lg:p-8 space-y-6 animate-in slide-in-from-bottom-8 duration-500" style={{ animationDelay: "900ms", animationFillMode: "both" }}>
+          <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800/80 pb-4">
+            <div className="flex items-center space-x-3 text-slate-800 dark:text-slate-200">
+              <div className="p-2 bg-purple-50 dark:bg-purple-500/10 rounded-xl text-purple-600"><FolderGit2 size={18} /></div>
+              <h2 className="text-sm font-black uppercase tracking-wider font-mono">ROSCO Scope Workspace</h2>
+            </div>
+            {reconciledRoscoRows.length > 0 && (
+              <button type="button" onClick={handleClearRoscoWorkspace} className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 dark:bg-rose-500/10 text-rose-600 border border-rose-200 dark:border-rose-500/20 text-[10px] font-black uppercase rounded-xl font-mono tracking-wider hover:bg-rose-100 dark:hover:bg-rose-500/20 active:scale-95 transition-all"><X size={14} /> Clear Mask</button>
             )}
           </div>
 
-          {/* --- TABS NAVIGATION --- */}
-          {data && (
-             <div className="flex px-4 pt-3 bg-white dark:bg-slate-900 gap-6 border-b border-slate-200 dark:border-slate-800 overflow-x-auto shrink-0 custom-scrollbar">
-               {[
-                 {id: "bsa", label: "BSA View", icon: FileSpreadsheet}, 
-                 {id: "trends", label: "Trend Tracker", icon: Activity}, 
-                 {id: "mandatory", label: "Mandatory Audit", icon: ShieldCheck}, 
-                 {id: "rosco", label: "Rosco Compare", icon: Globe},
-                //  {id: "timeline", label: "Broadcast Timeline", icon: Clock}
-               ].map((t) => (
-                 <button key={t.id} onClick={() => setActiveTab(t.id as any)} className={`pb-2 text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 whitespace-nowrap transition-all ${activeTab === t.id ? 'border-b-2 border-blue-600 text-blue-600 dark:text-blue-400 dark:border-blue-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-200'}`}>
-                   <t.icon size={12}/> {t.label}
-                 </button>
-               ))}
-             </div>
-          )}
-
-          {/* --- TAB CONTENT AREAS --- */}
-          <div className="flex-1 overflow-hidden p-4 bg-[#F8FAFC] dark:bg-[#0B0C0E]">
-            
-            {/* 1. TAB: BSA VIEW */}
-            {activeTab === "bsa" && data && (
-              <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col h-full w-full">
-                <div className="p-3 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 flex justify-between items-center gap-4 shrink-0">
-                  <div className="relative w-full max-w-sm">
-                    <Search size={14} className="absolute left-3 top-2 text-slate-400"/>
-                    <input type="text" placeholder="Search..." className="w-full text-xs pl-8 pr-8 py-1.5 border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-700 dark:text-slate-200 rounded-lg focus:ring-1 focus:ring-blue-500 outline-none transition-all placeholder:text-slate-400" value={globalSearch} onChange={(e) => setGlobalSearch(e.target.value)} />
-                    {globalSearch && <button onClick={() => setGlobalSearch("")} className="absolute right-2 top-2 text-slate-400 hover:text-slate-600"><X size={12}/></button>}
-                  </div>
-                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider whitespace-nowrap">Showing <span className="text-slate-900 dark:text-white">{filteredTableData.length}</span> rows</div>
+          {reconciledRoscoRows.length === 0 ? (
+            /* 📥 PERSISTENT UPLOAD DROPZONE AREA */
+            <div className="w-full border-2 border-dashed border-slate-300 dark:border-slate-700 rounded-3xl py-16 text-center relative hover:border-purple-500/50 hover:bg-purple-50/50 dark:hover:bg-purple-900/10 transition-all duration-300 group">
+              <input type="file" accept=".xlsx, .xls, .csv" onChange={handleRoscoDocumentIngestion} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-30" />
+              <div className="flex flex-col items-center space-y-3 pointer-events-none relative z-10">
+                <div className={`p-4 rounded-full bg-white dark:bg-slate-800 shadow-sm border border-slate-100 dark:border-slate-700 transition-all duration-500 group-hover:scale-110 group-hover:shadow-purple-500/20 ${isReconciling ? "animate-bounce" : ""}`}>
+                  <UploadCloud size={36} className="text-slate-400 group-hover:text-purple-600 transition-colors" />
                 </div>
+                <p className="text-sm font-black text-slate-800 dark:text-slate-200 uppercase tracking-wide">{isReconciling ? "Reconciling Assets..." : "Upload Project ROSCO Template File Here"}</p>
+                <p className="text-xs text-slate-500 max-w-sm font-sans">Upload ROSCO Here</p>
+              </div>
+            </div>
+          ) : (
+            /* 📊 RECONCILED PROJECT CONTENT MODULES */
+            <div className="w-full space-y-6 animate-in fade-in duration-500">
+              
+              {dateDisclaimer && (
+                <div className="w-full bg-blue-50 dark:bg-blue-900/20 border-l-4 border-l-blue-500 p-4 rounded-r-2xl text-xs text-blue-700 dark:text-blue-300 font-sans font-bold shadow-sm animate-in slide-in-from-left-4">
+                  {dateDisclaimer}
+                </div>
+              )}
+
+              {roscoMetadata && (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-5 bg-slate-50/50 dark:bg-slate-950/50 border border-slate-200/60 dark:border-slate-800/80 rounded-3xl p-6 shadow-sm">
+                  <div className="space-y-1.5"><span className="text-[10px] font-mono font-black text-slate-400 uppercase tracking-widest">Ingested Context</span><p className="text-sm font-black text-slate-800 dark:text-slate-100 truncate">{roscoMetadata.projectTitle}</p></div>
+                  <div className="space-y-1.5"><span className="text-[10px] font-mono font-black text-slate-400 uppercase tracking-widest">ROSCO Timeline</span><p className="text-sm font-bold font-mono text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 w-max px-2 py-0.5 rounded-md">{roscoMetadata.startDate} — {roscoMetadata.endDate}</p></div>
+                  <div className="space-y-1.5"><span className="text-[10px] font-mono font-black text-slate-400 uppercase tracking-widest">Operational Track</span><p className="text-sm font-black text-purple-600 uppercase font-mono truncate">{roscoMetadata.sportsBlocks.join(", ")}</p></div>
+                </div>
+              )}
+              {/* ✅ ENLARGED KPI & FULL FILTER DASHBOARD */}
+              <div className="flex flex-col lg:flex-row gap-4 items-stretch justify-between bg-white dark:bg-[#111623] border border-slate-200/60 dark:border-slate-800/80 rounded-2xl p-4 shadow-sm">
                 
-                <div className="flex-1 overflow-auto custom-scrollbar w-full">
-                  <table className="w-full text-[10px] text-left border-collapse relative">
-                    <thead className="bg-slate-50 dark:bg-slate-800 font-bold sticky top-0 z-10 shadow-sm text-slate-500 dark:text-slate-400 uppercase">
-                      <tr>
-                        <th className="p-3 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 w-12 text-center">SR.</th>
-                        <SortableHeader label="TV CHANNEL" sortKey="TV Channel" currentSort={sortConfig} onSort={requestSort} />
-                        <SortableHeader label="MARKET" sortKey="Market" currentSort={sortConfig} onSort={requestSort} />
-                        <SortableHeader label="STATUS" sortKey="Final Status" currentSort={sortConfig} onSort={requestSort} />
-                        {visibleDateColumns.map((d) => (
-                          <th key={d} className="p-3 border-b border-slate-200 dark:border-slate-700 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 group bg-slate-50 dark:bg-slate-800 min-w-[130px] whitespace-nowrap transition-colors" onClick={() => requestSort(d)}>
-                            <div className="flex items-center justify-center gap-2 group-hover:text-blue-600 transition-colors">
-                              <div className="flex-1 text-center">{formatHeaderDate(d)}</div>
-                              <ArrowUpDown size={12} className={`shrink-0 ${sortConfig?.key === d ? 'text-blue-500 opacity-100' : 'opacity-0 group-hover:opacity-50'} transition-all`} />
+                {/* Left: Quick Stats Mini-Cards */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200/60 dark:border-slate-800 rounded-xl flex flex-col justify-center min-w-[110px]">
+                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Total Channels</span>
+                    <span className="text-sm font-black text-slate-700 dark:text-slate-200">{roscoKpis.total}</span>
+                  </div>
+                  <div className="px-3 py-2 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 rounded-xl flex flex-col justify-center min-w-[110px]">
+                    <span className="text-[9px] font-black text-emerald-600 uppercase tracking-widest">Scheduled OK</span>
+                    <span className="text-sm font-black text-emerald-700 dark:text-emerald-400">{roscoKpis.ok}</span>
+                  </div>
+                  <div className="px-3 py-2 bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 rounded-xl flex flex-col justify-center min-w-[110px]">
+                    <span className="text-[9px] font-black text-rose-600 uppercase tracking-widest">Processing Gaps</span>
+                    <span className="text-sm font-black text-rose-700 dark:text-rose-400">{roscoKpis.gaps}</span>
+                  </div>
+                  <div className="px-3 py-2 bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-200 dark:border-indigo-500/20 rounded-xl flex flex-col justify-center min-w-[110px]">
+                    <span className="text-[9px] font-black text-indigo-600 uppercase tracking-widest">Partial Schedule</span>
+                    <span className="text-sm font-black text-indigo-700 dark:text-indigo-400">{roscoKpis.partial}</span>
+                  </div>
+                  <div className="px-3 py-2 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 rounded-xl flex flex-col justify-center min-w-[110px]">
+                    <span className="text-[9px] font-black text-amber-700 uppercase tracking-widest">No Schedule</span>
+                    <span className="text-sm font-black text-amber-800 dark:text-amber-400">{roscoKpis.noSched}</span>
+                  </div>
+                  <div className="px-3 py-2 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl flex flex-col justify-center min-w-[110px]">
+                    <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Missing Track</span>
+                    <span className="text-sm font-black text-slate-600 dark:text-slate-300">{roscoKpis.missing}</span>
+                  </div>
+                </div>
+
+                {/* Right: Inline Target Filters */}
+                <div className="flex flex-wrap items-center gap-2 text-[10px] border-t lg:border-t-0 lg:border-l border-slate-100 dark:border-slate-800 pt-3 lg:pt-0 lg:pl-4 w-full lg:w-auto shrink-0 z-30">
+                  <span className="font-mono font-black uppercase tracking-wider text-slate-400 flex items-center gap-1"><Filter size={11} /> Slice:</span>
+                  
+                  {/* Start Date */}
+                  <div className="relative" ref={roscoStartCalRef}>
+                    <div onClick={() => { setRoscoStartCalOpen(!roscoStartCalOpen); setRoscoEndCalOpen(false); setRoscoMarketOpen(false); setRoscoChannelOpen(false); setRoscoStatusOpen(false); }} className="px-2.5 py-1.5 bg-slate-50 dark:bg-slate-950 border border-slate-200/60 dark:border-slate-800 rounded-lg font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5 cursor-pointer select-none">
+                      <CalendarIcon size={10} className="text-purple-400"/> <span>{formattedLabelDate(roscoStartDate)}</span>
+                    </div>
+                    {roscoStartCalOpen && <div className="absolute top-[110%] right-0 z-50"><ModernCalendar initialDate={roscoStartDate || new Date()} selectedValue={roscoStartDate} onSelect={(date) => { setRoscoStartDate(date); setRoscoStartCalOpen(false); }} /></div>}
+                  </div>
+
+                  {/* End Date */}
+                  <div className="relative" ref={roscoEndCalRef}>
+                    <div onClick={() => { setRoscoEndCalOpen(!roscoEndCalOpen); setRoscoStartCalOpen(false); setRoscoMarketOpen(false); setRoscoChannelOpen(false); setRoscoStatusOpen(false); }} className="px-2.5 py-1.5 bg-slate-50 dark:bg-slate-950 border border-slate-200/60 dark:border-slate-800 rounded-lg font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5 cursor-pointer select-none">
+                      <CalendarIcon size={10} className="text-purple-400"/> <span>{formattedLabelDate(roscoEndDate)}</span>
+                    </div>
+                    {roscoEndCalOpen && <div className="absolute top-[110%] right-0 z-50"><ModernCalendar initialDate={roscoEndDate || new Date()} selectedValue={roscoEndDate} onSelect={(date) => { setRoscoEndDate(date); setRoscoEndCalOpen(false); }} /></div>}
+                  </div>
+
+                  {/* Market Filter */}
+                  <div className="relative" ref={roscoMarketRef}>
+                    <div onClick={() => { setRoscoMarketOpen(!roscoMarketOpen); setRoscoStatusOpen(false); setRoscoChannelOpen(false); setRoscoStartCalOpen(false); setRoscoEndCalOpen(false); }} className="px-2.5 py-1.5 bg-slate-50 dark:bg-slate-950 border border-slate-200/60 dark:border-slate-800 rounded-lg font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5 cursor-pointer select-none">
+                      <span>{roscoSelectedMarkets.length === 0 ? "Markets" : `${roscoSelectedMarkets.length} Selected`}</span><ChevronDown size={10} className="text-slate-400" />
+                    </div>
+                    {roscoMarketOpen && (
+                      <div className="absolute top-[110%] right-0 w-48 bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl p-2 space-y-1 z-50">
+                        <div className="overflow-y-auto max-h-40 space-y-0.5 scrollbar-hide">
+                          {Array.from(new Set(reconciledRoscoRows.map(r => String(r.country || "")))).filter(Boolean).map(country => (
+                            <div key={country} onClick={() => handleToggleSelection(country, roscoSelectedMarkets, setRoscoSelectedMarkets)} className="flex items-center space-x-2 px-2 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-md cursor-pointer">
+                              <div className={`w-3 h-3 rounded border flex items-center justify-center ${roscoSelectedMarkets.includes(country) ? "bg-purple-500 border-purple-500 text-white" : "border-slate-300"}`}>{roscoSelectedMarkets.includes(country) && <Check size={8} strokeWidth={4}/>}</div>
+                              <span className="font-medium text-slate-700 dark:text-slate-300 truncate">{country}</span>
                             </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Channel Filter */}
+                  <div className="relative" ref={roscoChannelRef}>
+                    <div onClick={() => { setRoscoChannelOpen(!roscoChannelOpen); setRoscoMarketOpen(false); setRoscoStatusOpen(false); setRoscoStartCalOpen(false); setRoscoEndCalOpen(false); }} className="px-2.5 py-1.5 bg-slate-50 dark:bg-slate-950 border border-slate-200/60 dark:border-slate-800 rounded-lg font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5 cursor-pointer select-none">
+                      <span>{roscoSelectedChannels.length === 0 ? "Channels" : `${roscoSelectedChannels.length} Selected`}</span><ChevronDown size={10} className="text-slate-400" />
+                    </div>
+                    {roscoChannelOpen && (
+                      <div className="absolute top-[110%] right-0 w-52 bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl p-2 space-y-1 z-50">
+                        <div className="flex items-center bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-md px-2 py-1 mb-1"><Search size={10} className="text-slate-400 mr-1.5" /><input type="text" placeholder="Search..." value={roscoChannelSearch} onChange={(e) => setRoscoChannelSearch(e.target.value)} className="bg-transparent w-full outline-none text-slate-700 dark:text-slate-300" /></div>
+                        <div className="overflow-y-auto max-h-40 space-y-0.5 scrollbar-hide">
+                          {Array.from(new Set(reconciledRoscoRows.map(r => String(r.rosco_name || "")))).filter(c => c.toLowerCase().includes(roscoChannelSearch.toLowerCase())).map(channel => (
+                            <div key={channel} onClick={() => handleToggleSelection(channel, roscoSelectedChannels, setRoscoSelectedChannels)} className="flex items-center space-x-2 px-2 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-md cursor-pointer">
+                              <div className={`w-3 h-3 rounded border flex items-center justify-center ${roscoSelectedChannels.includes(channel) ? "bg-purple-500 border-purple-500 text-white" : "border-slate-300"}`}>{roscoSelectedChannels.includes(channel) && <Check size={8} strokeWidth={4}/>}</div>
+                              <span className="font-medium text-slate-700 dark:text-slate-300 truncate">{channel}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Status Filter */}
+                  <div className="relative" ref={roscoStatusRef}>
+                    <div onClick={() => { setRoscoStatusOpen(!roscoStatusOpen); setRoscoMarketOpen(false); setRoscoChannelOpen(false); setRoscoStartCalOpen(false); setRoscoEndCalOpen(false); }} className="px-2.5 py-1.5 bg-slate-50 dark:bg-slate-950 border border-slate-200/60 dark:border-slate-800 rounded-lg font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5 cursor-pointer select-none">
+                      <span>{roscoSelectedStatuses.length === 0 ? "Statuses" : `${roscoSelectedStatuses.length} Selected`}</span><ChevronDown size={10} className="text-slate-400" />
+                    </div>
+                    {roscoStatusOpen && (
+                      <div className="absolute top-[110%] right-0 w-44 bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl p-2 space-y-0.5 z-50">
+                        {[
+                          { id: "OK", label: "Scheduled OK" },
+                          { id: "PARTIAL", label: "Partial Schedule" },
+                          { id: "NOSCHED", label: "No Schedule" },
+                          { id: "GAPS", label: "Processing Gaps" },
+                          { id: "MISSING", label: "Missing Track" }
+                        ].map(statusItem => (
+                          <div key={statusItem.id} onClick={() => handleToggleSelection(statusItem.id, roscoSelectedStatuses, setRoscoSelectedStatuses)} className="flex items-center space-x-2 px-2 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-md cursor-pointer">
+                            <div className={`w-3 h-3 rounded border flex items-center justify-center ${roscoSelectedStatuses.includes(statusItem.id) ? "bg-purple-500 border-purple-500 text-white" : "border-slate-300"}`}>{roscoSelectedStatuses.includes(statusItem.id) && <Check size={8} strokeWidth={4}/>}</div>
+                            <span>{statusItem.label}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ✅ FIX: Added Start/End dates to the clear condition and onClick handler */}
+                  {(roscoSelectedMarkets.length > 0 || roscoSelectedStatuses.length > 0 || roscoSelectedChannels.length > 0 || roscoStartDate || roscoEndDate) && (
+                    <button 
+                      onClick={() => { 
+                        setRoscoSelectedMarkets([]); 
+                        setRoscoSelectedStatuses([]); 
+                        setRoscoSelectedChannels([]); 
+                        setRoscoStartDate(undefined); 
+                        setRoscoEndDate(undefined); 
+                      }} 
+                      className="p-1.5 bg-rose-50 dark:bg-rose-500/10 text-rose-600 hover:bg-rose-100 dark:hover:bg-rose-500/20 rounded-lg transition-colors" 
+                      title="Clear All Filters"
+                    >
+                      <X size={14}/>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* TRANSLATED SCOPE GRID */}
+              <div className="border border-slate-200/60 dark:border-slate-800/80 rounded-3xl overflow-hidden shadow-sm flex flex-col">
+                <div className="p-4 border-b border-slate-100 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-900/50 flex flex-col sm:flex-row items-center justify-between gap-4">
+                  <span className="text-[10px] font-black text-slate-500 uppercase tracking-wide font-mono bg-white dark:bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-200/60 dark:border-slate-700/60 shadow-sm">ROSCO CONSOLIDATED TABLE</span>
+                  
+                  <div className="flex items-center space-x-3 w-full sm:w-auto">
+                    <div className="relative w-full sm:w-64">
+                      <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
+                      <input type="text" placeholder="Search project track..." value={roscoSearchQuery} onChange={(e) => { setRoscoSearchQuery(e.target.value); setRoscoCurrentPage(1); }} className="w-full text-xs pl-9 pr-4 py-2 bg-white dark:bg-slate-950 border border-slate-200/60 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition-all" />
+                    </div>
+                    <button type="button" onClick={handleExportRoscoWorkspaceSummary} disabled={isExportingRosco || !sortedRoscoGridMatrix.length} className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-400 text-white text-xs font-black uppercase tracking-wider rounded-xl shadow-md shadow-purple-600/20 active:scale-95 transition-all shrink-0">
+                      <FileSpreadsheet size={14} className={isExportingRosco ? "animate-pulse" : ""} /> Download
+                    </button>
+                  </div>
+                </div>
+                <div className="w-full overflow-x-auto overflow-y-auto max-h-[500px] relative select-none scrollbar-hide">
+                  <table className="w-full table-fixed border-separate border-spacing-0 text-left">
+                    <thead className="bg-slate-50 dark:bg-slate-950 font-mono text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-widest sticky top-0 z-20">
+                      <tr>
+                        <th onClick={() => handleRoscoSortTrigger("index")} className="sticky top-0 left-0 bg-slate-50 dark:bg-slate-950 border-b border-r border-slate-200/60 dark:border-slate-800/80 p-4 w-[70px] z-40 cursor-pointer select-none hover:bg-slate-100 transition-colors shadow-sm">
+                          <div className="flex items-center justify-center"><span>IDX</span>{renderSortIndicatorIcons(roscoSortColumn, "index", roscoSortDirection)}</div>
+                        </th>
+                        <th onClick={() => handleRoscoSortTrigger("rosco_name")} className="sticky top-0 left-[70px] bg-slate-50 dark:bg-slate-950 border-b border-r border-slate-200/60 dark:border-slate-800/80 p-4 w-[240px] z-40 cursor-pointer select-none hover:bg-slate-100 transition-colors shadow-sm"><div className="flex items-center justify-between"><span>ROSCO TV Channel</span>{renderSortIndicatorIcons(roscoSortColumn, "rosco_name", roscoSortDirection)}</div></th>
+                        <th onClick={() => handleRoscoSortTrigger("country")} className="sticky top-0 bg-slate-50 dark:bg-slate-950 border-b border-r border-slate-200/60 dark:border-slate-800/80 p-4 w-40 cursor-pointer select-none hover:bg-slate-100 transition-colors"><div className="flex items-center justify-between"><span>Country</span>{renderSortIndicatorIcons(roscoSortColumn, "country", roscoSortDirection)}</div></th>
+                        <th onClick={() => handleRoscoSortTrigger("found_bsa")} className="sticky top-0 bg-slate-50 dark:bg-slate-950 border-b border-r border-slate-200/60 dark:border-slate-800/80 p-4 w-40 text-center cursor-pointer select-none hover:bg-slate-100 transition-colors"><div className="flex items-center justify-between"><span>Found in BSA</span>{renderSortIndicatorIcons(roscoSortColumn, "found_bsa", roscoSortDirection)}</div></th>
+                        <th onClick={() => handleRoscoSortTrigger("found_aura")} className="sticky top-0 bg-slate-50 dark:bg-slate-950 border-b border-r border-slate-200/60 dark:border-slate-800/80 p-4 w-40 text-center cursor-pointer select-none hover:bg-slate-100 transition-colors"><div className="flex items-center justify-between"><span>Found in AURA</span>{renderSortIndicatorIcons(roscoSortColumn, "found_aura", roscoSortDirection)}</div></th>
+                        <th onClick={() => handleRoscoSortTrigger("badge_code")} className="sticky top-0 bg-slate-50 dark:bg-slate-950 border-b border-r border-slate-200/60 dark:border-slate-800/80 p-4 w-52 text-center cursor-pointer select-none hover:bg-slate-100 transition-colors shadow-[4px_0_12px_-4px_rgba(0,0,0,0.05)]"><div className="flex items-center justify-between"><span>Final Status</span>{renderSortIndicatorIcons(roscoSortColumn, "badge_code", roscoSortDirection)}</div></th>
+                        
+                        {roscoActiveSortedDates.map(dateKey => (
+                           <th key={dateKey} onClick={() => handleRoscoSortTrigger(dateKey)} className="sticky top-0 bg-slate-50 dark:bg-slate-950 p-4 border-b border-r border-slate-200/60 dark:border-slate-800/80 text-center font-bold font-sans text-slate-600 dark:text-slate-300 w-36 whitespace-nowrap z-20 shadow-sm cursor-pointer hover:bg-slate-100 transition-colors">
+                            <div className="flex items-center justify-between"><span>{dateKey}</span>{renderSortIndicatorIcons(roscoSortColumn, dateKey, roscoSortDirection)}</div>
                           </th>
                         ))}
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {filteredTableData.map((row: any, idx: number) => (
-                        <tr key={idx} className="hover:bg-blue-50/50 dark:hover:bg-blue-900/20 group transition-colors">
-                          <td className="p-2 text-center text-slate-400 dark:text-slate-500 w-12 border-b border-slate-50 dark:border-slate-800/50 font-medium">{idx + 1}</td>
-                          <td className="p-2 pl-3 font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap border-b border-slate-50 dark:border-slate-800/50 tracking-tight">{row["TV Channel"]}</td>
-                          <td className="p-2 text-slate-500 dark:text-slate-400 whitespace-nowrap border-b border-slate-50 dark:border-slate-800/50">{row.Market}</td>
-                          <td className="p-2 whitespace-nowrap border-b border-slate-50 dark:border-slate-800/50">
-                            <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase leading-none inline-block shadow-sm" style={getBadgeStyle(row["Final Status"])}>
-                              {row["Final Status"]}
-                            </span>
-                          </td>
-                          {visibleDateColumns.map((d) => (
-                            <td key={d} className="p-2 text-slate-400 dark:text-slate-500 border-l border-slate-50 dark:border-slate-800/50 border-b group-hover:border-slate-100 dark:group-hover:border-slate-700 text-center whitespace-nowrap font-medium">{row[d] || "-"}</td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800/40 text-xs font-semibold">
+                      {paginatedRoscoRows.map((row: any, rIdx: number) => {
+                        const matchedBsaRow = dataState.rawBsaRows.find(b => String(b["TV Channel"] || b["tv channel"] || "").toLowerCase().trim().replace(/[^a-z0-9]/g, "") === String(row.rosco_name || "").toLowerCase().trim().replace(/[^a-z0-9]/g, ""));
+                        const isFoundInBsa = matchedBsaRow !== undefined;
+                        const isFoundInAura = row.is_in_aura === "YES";
 
-            {/* 2. TAB: TRENDS (Synchronized bars) */}
-            {activeTab === "trends" && data && (
-              <div className="h-full bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col">
-                <h3 className="font-bold mb-4 text-sm text-slate-600 dark:text-slate-300 flex items-center gap-2"><Activity size={16} className="text-blue-500"/> Daily Status Distribution</h3>
-                <div className="flex-1 min-h-0 relative text-slate-500 dark:text-slate-400">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={dynamicTrendStats} barSize={24}> 
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="currentColor" strokeOpacity={0.1} />
-                      <XAxis dataKey="Date" tick={{fontSize: 10, fill: 'currentColor'}} axisLine={false} tickLine={false} dy={5} />
-                      <YAxis tick={{fontSize: 10, fill: 'currentColor'}} axisLine={false} tickLine={false} width={25} />
-                      <Tooltip cursor={{ fill: 'currentColor', opacity: 0.1 }} contentStyle={{ background: 'var(--tw-bg-opacity)', border: 'none' }} />
-                      <Legend verticalAlign="top" height={36} iconType="circle" iconSize={8} formatter={(value) => <span className="text-slate-600 dark:text-slate-300 font-semibold">{value}</span>}/>
-                      
-                      <Bar name="Scheduled OK" dataKey="Scheduled" stackId="a" fill={COLORS.OK} radius={[0, 0, 4, 4]} />
-                      <Bar name="Processing Gaps" dataKey="Processing Gaps" stackId="a" fill={COLORS.GAPS} />
-                      <Bar name="Partial Schedule" dataKey="Partial Schedule" stackId="a" fill={COLORS.PARTIAL} />
-                      <Bar name="No Schedule" dataKey="No Schedule" stackId="a" fill={COLORS.NO_SCHEDULE} radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-            )}
+                        let bsaBadgeColor = "bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 border border-emerald-200 dark:border-emerald-500/20";
+                        let auraBadgeColor = "bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 border border-emerald-200 dark:border-emerald-500/20";
+                        let finalStatusClasses = "bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 border border-emerald-200 dark:border-emerald-500/20";
+                        let finalStatusLabel = "Scheduled OK";
 
-            {/* 3. TAB: MANDATORY AUDIT */}
-            {activeTab === "mandatory" && data && (
-              <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm h-full flex flex-col">
-                <div className="p-3 border-b border-slate-100 dark:border-slate-800 font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2 bg-slate-50 dark:bg-slate-800/50 text-xs shrink-0 tracking-wider">
-                  <ShieldCheck size={14} className="text-purple-500"/> MANDATORY AUDIT RESULTS
-                </div>
-                <div className="flex-1 overflow-auto custom-scrollbar">
-                  <table className="w-full text-xs text-left">
-                    <thead className="bg-slate-50 dark:bg-slate-800 text-[9px] text-slate-400 uppercase sticky top-0 z-10">
-                      <tr>
-                        <th className="p-3 border-b border-slate-200 dark:border-slate-700 w-12 text-center">SR.</th>
-                        <th className="p-3 border-b border-slate-200 dark:border-slate-700 font-bold">CHANNEL NAME</th>
-                        <th className="p-3 border-b border-slate-200 dark:border-slate-700 text-center font-bold">FOUND</th>
-                        <th className="p-3 border-b border-slate-200 dark:border-slate-700 text-right font-bold">STATUS</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {(data.mandatory_audit || []).map((row: any, i: number) => (
-                        <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
-                          <td className="p-3 text-center text-slate-400 dark:text-slate-500 w-12">{i + 1}</td>
-                          <td className="p-3 font-bold text-slate-700 dark:text-slate-300">{row.Channel}</td>
-                          <td className="p-3 text-center">{row.Found === "YES" ? <CheckCircle className="text-emerald-500 mx-auto" size={16} /> : <AlertTriangle className="text-rose-500 mx-auto" size={16} />}</td>
-                          <td className="p-3 text-right">
-                            <span className="px-2 py-0.5 rounded-full text-[9px] font-black shadow-sm" style={getBadgeStyle(row.Status)}>
-                              {row.Status}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
+                        if (isFoundInBsa && !isFoundInAura) {
+                          auraBadgeColor = "bg-rose-50 dark:bg-rose-500/10 text-rose-600 border border-rose-200 dark:border-rose-500/20 font-bold";
+                          finalStatusClasses = "bg-indigo-50 dark:bg-indigo-500/10 text-indigo-700 border border-indigo-200 dark:border-indigo-500/20";
+                          finalStatusLabel = "Partial Schedule";
+                        } else if (!isFoundInBsa && isFoundInAura) {
+                          bsaBadgeColor = "bg-rose-50 dark:bg-rose-500/10 text-rose-600 border border-rose-200 dark:border-rose-500/20 font-bold";
+                          finalStatusClasses = "bg-blue-50 dark:bg-blue-500/10 text-blue-700 border border-blue-200 dark:border-blue-500/20 font-black shadow-sm";
+                          finalStatusLabel = "Found in AURA";
+                        } else if (!isFoundInBsa && !isFoundInAura) {
+                          bsaBadgeColor = "bg-rose-50 dark:bg-rose-500/10 text-rose-600 border border-rose-200 dark:border-rose-500/20 font-bold";
+                          auraBadgeColor = "bg-rose-50 dark:bg-rose-500/10 text-rose-600 border border-rose-200 dark:border-rose-500/20 font-bold";
+                          finalStatusClasses = "bg-rose-50 dark:bg-rose-500/10 text-rose-700 border border-rose-200 dark:border-rose-500/20 font-black";
+                          finalStatusLabel = "Missing in Both";
+                        }
 
-            {/* 4. TAB: ROSCO COMPARE */}
-            {activeTab === "rosco" && data && (
-              <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm h-full flex flex-col w-full">
-                {data.rosco_view && data.rosco_view.length > 0 ? (
-                  <>
-                    <div className="p-3 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 flex justify-between items-center gap-4 shrink-0">
-                      <div className="relative w-full max-w-sm">
-                        <Search size={14} className="absolute left-3 top-2 text-slate-400"/>
-                        <input type="text" placeholder="Search Rosco..." className="w-full text-xs pl-8 pr-8 py-1.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-700 dark:text-slate-200 focus:ring-1 focus:ring-blue-500 outline-none transition-all placeholder:text-slate-400" value={globalSearch} onChange={(e) => setGlobalSearch(e.target.value)} />
-                        {globalSearch && <button onClick={() => setGlobalSearch("")} className="absolute right-2 top-2 text-slate-400 hover:text-slate-600"><X size={12}/></button>}
-                      </div>
-                      <div className="text-[10px] font-bold text-slate-400 uppercase whitespace-nowrap">Showing <span className="text-slate-900 dark:text-white">{filteredTableData.length}</span> rows</div>
-                    </div>
-                    <div className="flex-1 overflow-auto custom-scrollbar w-full">
-                      <table className="w-full text-[10px] text-left border-collapse relative">
-                        <thead className="bg-slate-50 dark:bg-slate-800 font-bold sticky top-0 z-10 shadow-sm text-slate-500 dark:text-slate-400 uppercase">
-                          <tr>
-                            <th className="p-3 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 w-12 text-center">SR.</th>
-                            <SortableHeader label="CHANNEL" sortKey="Channel" currentSort={sortConfig} onSort={requestSort} />
-                            <SortableHeader label="MARKET" sortKey="Market" currentSort={sortConfig} onSort={requestSort} />
-                            <th className="p-3 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 min-w-[60px] text-center">AURA?</th>
-                            <th className="p-3 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 min-w-[60px] text-center">BSA?</th>
-                            <SortableHeader label="STATUS" sortKey="Final Status" currentSort={sortConfig} onSort={requestSort} />
-                            {visibleDateColumns.map(d => <th key={d} className="p-3 border-b border-slate-200 dark:border-slate-700 min-w-[110px] text-center bg-slate-50 dark:bg-slate-800 font-normal">{formatHeaderDate(d)}</th>)}
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                          {filteredTableData.map((row: any, idx: number) => (
-                            <tr key={idx} className="hover:bg-blue-50/50 dark:hover:bg-blue-900/20 transition-colors group">
-                              <td className="p-2 text-center text-slate-400 dark:text-slate-500 w-12 border-b border-slate-50 dark:border-slate-800/50 font-medium">{idx + 1}</td>
-                              <td className="p-2 pl-3 font-bold text-slate-700 dark:text-slate-200 border-b border-slate-50 dark:border-slate-800/50 whitespace-nowrap">{row.Channel}</td>
-                              <td className="p-2 text-slate-500 dark:text-slate-400 border-b border-slate-50 dark:border-slate-800/50 whitespace-nowrap">{row.Market}</td>
-                              <td className="p-2 text-center border-b border-slate-50 dark:border-slate-800/50">{row["IN AURA"] === "YES" ? <span className="text-emerald-500 font-bold">YES</span> : <span className="text-rose-500 font-bold">NO</span>}</td>
-                              <td className="p-2 text-center border-b border-slate-50 dark:border-slate-800/50">{row["IN BSA"] === "YES" ? <span className="text-emerald-500 font-bold">YES</span> : <span className="text-rose-500 font-bold">NO</span>}</td>
-                              <td className="p-2 border-b border-slate-50 dark:border-slate-800/50 whitespace-nowrap">
-                                <span className="px-1.5 py-0.5 rounded text-[9px] font-black uppercase inline-block shadow-sm" style={getBadgeStyle(row["Final Status"])}>
-                                  {row["Final Status"]}
-                                </span>
-                              </td>
-                              {visibleDateColumns.map(d => <td key={d} className="p-2 text-center text-slate-400 dark:text-slate-500 border-l border-slate-50 dark:border-slate-800/50 border-b group-hover:border-slate-100 dark:group-hover:border-slate-700 whitespace-nowrap">{row[d] && row[d] !== "Not in BSA" ? row[d] : "-"}</td>)}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </>
-                ) : (
-                  <div className="flex flex-col items-center justify-center h-full text-slate-400 dark:text-slate-600 gap-3">
-                    <Globe size={32} className="opacity-20" />
-                    <p className="text-xs">No Rosco data found. Please upload a file.</p>
-                  </div>
-                )}
-              </div>
-            )}
+                        if (matchedBsaRow) {
+                          const matchedStatusKey = matchedBsaRow["Final Status"] || matchedBsaRow["final status"] || "OK";
+                          if (String(matchedStatusKey).toUpperCase().includes("GAPS")) {
+                            finalStatusClasses = "bg-rose-50 dark:bg-rose-500/10 text-rose-700 border border-rose-200 dark:border-rose-500/20 font-bold";
+                            finalStatusLabel = "Processing Gaps";
+                          } else if (String(matchedStatusKey).toUpperCase().includes("NO SCHEDULE")) {
+                            finalStatusClasses = "bg-amber-50 dark:bg-amber-500/10 text-amber-700 border border-amber-200 dark:border-amber-500/20 font-bold";
+                            finalStatusLabel = "No Schedule";
+                          } else if (String(matchedStatusKey).toUpperCase().includes("PARTIAL")) {
+                            finalStatusClasses = "bg-indigo-50 dark:bg-indigo-500/10 text-indigo-700 border border-indigo-200 dark:border-indigo-500/20 font-bold";
+                            finalStatusLabel = "Partial Schedule";
+                          }
+                        }
 
-            {/* 5. TAB: BROADCAST TIMELINE */}
-            {activeTab === "timeline" && data && (
-              <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-col h-full overflow-hidden">
-                <div className="p-4 border-b border-slate-100 dark:border-slate-800 font-bold text-slate-700 dark:text-slate-200 flex items-center justify-between bg-slate-50 dark:bg-slate-800/50 text-sm shrink-0">
-                  <span className="flex items-center gap-2"><Clock size={16} className="text-blue-500"/> Live Broadcast Timeline</span>
-                  {timelineData && <span className="text-[10px] font-medium text-slate-500 px-2 py-1 bg-white dark:bg-slate-800 rounded border border-slate-200 dark:border-slate-700">{timelineData.sortedKeys.length} Channels found</span>}
-                </div>
-                {timelineData ? (
-                  <div className="flex-1 overflow-auto custom-scrollbar relative bg-[#F8FAFC] dark:bg-[#0B0C0E]">
-                    <div className="inline-flex flex-col min-w-full">
-                      {/* X-Axis Header */}
-                      <div className="sticky top-0 z-20 flex bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 h-8 shadow-sm">
-                        <div className="w-48 shrink-0 bg-slate-50 dark:bg-slate-800/80 border-r border-slate-200 dark:border-slate-700 sticky left-0 z-30 flex items-center px-3 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Market - Channel</div>
-                        <div className="flex-1 relative min-w-[800px]">
-                          {timelineData.ticks.map((tick: number) => {
-                            const date = new Date(tick); const isNewDay = date.getHours() === 0;
-                            const leftPct = ((tick - timelineData.minTs) / timelineData.totalSpan) * 100;
-                            if (leftPct < 0 || leftPct > 100) return null;
-                            return (
-                              <div key={tick} className={`absolute top-0 bottom-0 border-l px-1.5 flex items-center ${isNewDay ? 'border-slate-300 dark:border-slate-500 bg-slate-100/50 dark:bg-slate-800/50' : 'border-slate-200 dark:border-slate-700'}`} style={{ left: `${leftPct}%` }}>
-                                <span className={`text-[9px] font-bold ${isNewDay ? 'text-slate-700 dark:text-slate-200' : 'text-slate-400 dark:text-slate-500'}`}>{isNewDay ? `${date.getDate()} ${date.toLocaleString('default', {month:'short'})}` : `${date.getHours().toString().padStart(2,'0')}:00`}</span>
-                              </div>
-                            )
-                          })}
-                        </div>
-                      </div>
-                      {/* Gantt Rows */}
-                      <div className="flex flex-col relative min-w-full">
-                        <div className="absolute inset-0 z-0 flex pl-48">
-                          <div className="relative flex-1 min-w-[800px]">
-                            {timelineData.ticks.map((tick: number) => {
-                              const isNewDay = new Date(tick).getHours() === 0;
-                              const leftPct = ((tick - timelineData.minTs) / timelineData.totalSpan) * 100;
-                              if (leftPct < 0 || leftPct > 100) return null;
-                              return <div key={tick} className={`absolute top-0 bottom-0 border-l ${isNewDay ? 'border-slate-300 dark:border-slate-600 z-10' : 'border-slate-200/50 dark:border-slate-800/50'}`} style={{ left: `${leftPct}%` }} />
+                        const globalRoscoIdx = (roscoCurrentPage - 1) * rowsPerPage + rIdx + 1;
+
+                        return (
+                          <tr key={rIdx} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/50 transition-colors group animate-in fade-in" style={{ animationDelay: `${rIdx * 30}ms`, animationFillMode: "both" }}>
+                            <td className="sticky left-0 bg-white dark:bg-slate-900 border-r border-b border-slate-100 dark:border-slate-800/40 p-4 font-mono text-slate-400 font-bold group-hover:bg-slate-50 dark:group-hover:bg-slate-800 z-10 text-center">{String(globalRoscoIdx).padStart(2, "0")}</td>
+                            <td className="sticky left-[70px] bg-white dark:bg-slate-900 border-r border-b border-slate-100 dark:border-slate-800/40 p-4 font-black text-slate-800 dark:text-white group-hover:bg-slate-50 dark:group-hover:bg-slate-800 truncate z-10" title={row.rosco_name}>{row.rosco_name}</td>
+                            <td className="p-4 border-b border-r border-slate-100 dark:border-slate-800/40 text-slate-600 dark:text-slate-300 font-sans">{row.country}</td>
+                            <td className="p-4 border-b border-r border-slate-100 dark:border-slate-800/40 text-center"><span className={`px-2.5 py-1 text-[10px] font-mono font-black uppercase rounded-lg ${bsaBadgeColor}`}>{isFoundInBsa ? "YES" : "NO"}</span></td>
+                            <td className="p-4 border-b border-r border-slate-100 dark:border-slate-800/40 text-center"><span className={`px-2.5 py-1 text-[10px] font-mono font-black uppercase rounded-lg ${auraBadgeColor}`}>{isFoundInAura ? "YES" : "NO"}</span></td>
+                            <td className="p-4 border-b border-r border-slate-100 dark:border-slate-800/40 text-center shadow-[4px_0_12px_-4px_rgba(0,0,0,0.05)]"><span className={`px-3 py-1.5 text-[9px] uppercase font-mono tracking-wider font-black rounded-xl ${finalStatusClasses}`}>{finalStatusLabel}</span></td>
+                            
+                            {roscoActiveSortedDates.map((dateKey: string) => {
+                              // Rule 6: The Lost Channel Dash (-) Rule 
+                              // Rule 6: The Lost Channel Dash (-) Rule
+                              if (!isFoundInBsa && !isFoundInAura) return <td key={dateKey} className="p-4 border-r border-b border-slate-100 dark:border-slate-800/40 text-center font-medium text-slate-400 dark:text-slate-500 font-mono">-</td>;
+                              if (!isFoundInBsa) return <td key={dateKey} className="p-4 border-r border-b border-slate-100 dark:border-slate-800/40 text-center font-medium text-slate-300 dark:text-slate-600 font-mono">-</td>;
+
+                              const dayMetricValue = matchedBsaRow ? (matchedBsaRow[dateKey] || "-") : "No Schedule";
+                              const lowDay = String(dayMetricValue).toLowerCase();
+                              
+                              let statusTextClassModifiers = "text-slate-500 dark:text-slate-400";
+                              if (lowDay.includes("gaps") || lowDay.includes("missing")) statusTextClassModifiers = "text-rose-600 font-black";
+                              else if (lowDay.includes("no schedule") || dayMetricValue === "-" || dayMetricValue === "") statusTextClassModifiers = "text-slate-300 dark:text-slate-600 line-through font-normal";
+                              else if (lowDay.includes("scheduled") || lowDay.includes("ok") || lowDay.includes("active")) statusTextClassModifiers = "text-emerald-600 font-bold";
+
+                              return (
+                                <td key={dateKey} className={`p-4 border-r border-b border-slate-100 dark:border-slate-800/40 text-center font-medium whitespace-nowrap truncate max-w-[140px] overflow-hidden transition-colors ${statusTextClassModifiers}`} title={String(dayMetricValue)}>
+                                  {dayMetricValue}
+                                </td>
+                              );
                             })}
-                          </div>
-                        </div>
-                        {timelineData.sortedKeys.map((channelLabel: string) => (
-                          <div key={channelLabel} className="flex relative z-10 hover:bg-slate-50 dark:hover:bg-slate-800/50 border-b border-slate-100 dark:border-slate-800/50 h-10 group transition-colors">
-                            <div className="w-48 shrink-0 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-700 sticky left-0 z-20 flex items-center px-3 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/80 transition-colors">
-                              <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300 truncate" title={channelLabel}>{channelLabel}</span>
-                            </div>
-                            <div className="flex-1 relative min-w-[800px]">
-                              {timelineData.grouped[channelLabel].map((ev: any, idx: number) => {
-                                const leftPct = ((ev.startTs - timelineData.minTs) / timelineData.totalSpan) * 100;
-                                const widthPct = (ev.duration / timelineData.totalSpan) * 100;
-                                const colors = getTimelineColor(ev.Competition || "");
-                                
-                                return (
-                                  <div key={idx} className={`absolute top-1.5 bottom-1.5 rounded shadow-sm border ${colors.bg} ${colors.border} ${colors.text} flex items-center justify-center overflow-hidden cursor-pointer hover:brightness-110 transition-all px-1`} style={{ left: `${Math.max(0, leftPct)}%`, width: `${Math.min(100 - leftPct, widthPct)}%` }} title={`${ev.Competition}\nType: ${ev["Type of program"]}\nStart: ${new Date(ev.startTs).toLocaleString()}\nEnd: ${new Date(ev.endTs).toLocaleString()}`}>
-                                    {widthPct > 4 && <span className="text-[8px] font-bold truncate drop-shadow-md">{ev.Competition}</span>}
-                                  </div>
-                                )
-                              })}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center justify-center h-full text-slate-400 dark:text-slate-600 gap-3">
-                    <Clock size={32} className="opacity-20" />
-                    <p className="text-xs">No Timeline data found. Ensure events are marked &apos;Live&apos;.</p>
-                  </div>
-                )}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            )}
 
-          </div>
+              {/* Table 3 Pagination controls */}
+              <div className="p-2 flex items-center justify-between text-xs font-mono font-bold text-slate-500 dark:text-slate-400 border border-slate-200/60 dark:border-slate-800/60 rounded-2xl bg-white dark:bg-slate-900 px-4 shadow-sm">
+                <span>Showing {sortedRoscoGridMatrix.length === 0 ? 0 : (roscoCurrentPage - 1) * rowsPerPage + 1}–{Math.min(roscoCurrentPage * rowsPerPage, sortedRoscoGridMatrix.length)} of {sortedRoscoGridMatrix.length}</span>
+                <div className="flex items-center space-x-1.5 py-2">
+                  <button type="button" onClick={() => setRoscoCurrentPage(1)} disabled={roscoCurrentPage === 1} className="p-2 bg-slate-50 dark:bg-slate-800 border border-slate-200/60 dark:border-slate-700 rounded-xl hover:bg-slate-100 active:scale-90 disabled:opacity-50 transition-all"><ChevronFirst size={14} /></button>
+                  <button type="button" onClick={() => setRoscoCurrentPage(prev => Math.max(prev - 1, 1))} disabled={roscoCurrentPage === 1} className="p-2 bg-slate-50 dark:bg-slate-800 border border-slate-200/60 dark:border-slate-700 rounded-xl hover:bg-slate-100 active:scale-90 disabled:opacity-50 transition-all"><ChevronLeft size={14} /></button>
+                  <span className="px-3">Page {roscoCurrentPage} of {roscoTotalPages}</span>
+                  <button type="button" onClick={() => setRoscoCurrentPage(prev => Math.min(prev + 1, roscoTotalPages))} disabled={roscoCurrentPage === roscoTotalPages} className="p-2 bg-slate-50 dark:bg-slate-800 border border-slate-200/60 dark:border-slate-700 rounded-xl hover:bg-slate-100 active:scale-90 disabled:opacity-50 transition-all"><ChevronRight size={14} /></button>
+                  <button type="button" onClick={() => setRoscoCurrentPage(roscoTotalPages)} disabled={roscoCurrentPage === roscoTotalPages} className="p-2 bg-slate-50 dark:bg-slate-800 border border-slate-200/60 dark:border-slate-700 rounded-xl hover:bg-slate-100 active:scale-90 disabled:opacity-50 transition-all"><ChevronLast size={14} /></button>
+                </div>
+              </div>
+
+              {/* ✅ MIRROR EQUAL GRAPH HEIGHT (Isolated to prevent lag) */}
+<TimelineSlicer data={roscoChronologicalMetricsDeck} title="DAY WISE ROSCO STATUS GRAPH " icon={<BarChart3 size={16} />} colorTheme="purple" />
+
+            </div>
+          )}
         </div>
+
       </div>
     </div>
   );
-};
-
-// --- SHARED COMPONENTS ---
-const SearchableList = ({ label, icon, options, selected, onChange }: any) => {
-  const [q, setQ] = useState("");
-  const filtered = options.filter((o: string) => o.toLowerCase().includes(q.toLowerCase()));
-  return (
-    <div className="space-y-2">
-      <label className="text-[10px] font-bold text-slate-400 uppercase flex justify-between items-center group">
-        <span className="flex items-center gap-2">{icon} {label}</span>
-        {selected.length > 0 && <span className="text-blue-500 cursor-pointer hover:underline" onClick={() => onChange([])}>Clear ({selected.length})</span>}
-      </label>
-      <div className="bg-slate-50 dark:bg-slate-800 p-2 rounded-lg border border-slate-100 dark:border-slate-700 shadow-inner">
-        <div className="relative mb-2">
-          <Search size={12} className="absolute left-2 top-2 text-slate-400"/>
-          <input type="text" placeholder={`Search ${label}...`} className="w-full text-[10px] pl-7 pr-2 py-1.5 border border-slate-200 dark:border-slate-600 rounded bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 outline-none focus:border-blue-500 transition-all placeholder:text-slate-400" value={q} onChange={(e) => setQ(e.target.value)} />
-        </div>
-        <div className="max-h-32 overflow-y-auto space-y-1 custom-scrollbar pr-1">
-          {filtered.length > 0 ? filtered.map((o: string) => (
-            <label key={o} className="flex items-center gap-2 text-[10px] hover:bg-white dark:hover:bg-slate-700 rounded cursor-pointer p-1.5 group transition-colors">
-              <input type="checkbox" className="rounded border-slate-300 dark:border-slate-500 text-blue-600 w-3 h-3 cursor-pointer focus:ring-0 bg-white dark:bg-slate-800" checked={selected.includes(o)} onChange={(e) => e.target.checked ? onChange([...selected, o]) : onChange(selected.filter((x: any) => x !== o))} />
-              <span className="truncate text-slate-600 dark:text-slate-300 group-hover:text-blue-600 dark:group-hover:text-blue-400 select-none" title={o}>{o}</span>
-            </label>
-          )) : <div className="text-[9px] text-slate-400 text-center py-2 italic">No matches found</div>}
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const MetricCard = ({ label, value, color }: { label: string, value: number, color: string }) => {
-  return (
-    <div className={`bg-white dark:bg-slate-900 p-3 rounded-lg border border-slate-200 dark:border-slate-800 border-l-4 shadow-sm`} style={{ borderLeftColor: color }}>
-      <p className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">{label}</p>
-      <p className="text-xl font-black mt-0.5" style={{ color: color }}>{value}</p>
-    </div>
-  );
-};
-
-const SortableHeader = ({ label, sortKey, currentSort, onSort }: any) => (
-  <th className="p-3 border-b border-slate-200 dark:border-slate-700 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors select-none group bg-slate-50 dark:bg-slate-800" onClick={() => onSort(sortKey)}>
-    <div className="flex items-center gap-1 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors uppercase">
-      {label} <ArrowUpDown size={10} className={`text-slate-400 ${currentSort?.key === sortKey ? 'text-blue-500 opacity-100' : 'opacity-0 group-hover:opacity-50'} transition-all`} />
-    </div>
-  </th>
-);
-
-export default EarlyWarningPage;
+}

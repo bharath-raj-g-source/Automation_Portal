@@ -106,6 +106,13 @@ const SlaTooltip = ({ active, payload, label }: any) => {
           <p className="text-[10px] font-bold flex items-center justify-between gap-4 text-slate-400 dark:text-slate-500"><span>Total Pending</span><span>{data.pending}</span></p>
           <p className="text-[10px] font-bold flex items-center justify-between gap-4 text-rose-500"><span>Total Missed</span><span>{data.missed}</span></p>
         </div>
+        {/* 👇 NEW: UX Click Hint 👇 */}
+        {data.missed > 0 && (
+          <p className="text-[9px] text-center text-rose-500 mt-2 pt-2 border-t border-slate-100 dark:border-slate-800/60 font-black tracking-wider animate-pulse">
+            👆 CLICK COLUMN FOR REASONS
+          </p>
+        )}
+
       </div>
     );
   }
@@ -157,18 +164,32 @@ const RoscoTooltip = ({ active, payload, label }: any) => {
   return null;
 };
 
-const WorkloadTooltip = ({ active, payload, label }: any) => {
+const WorkloadTooltip = ({ active, payload, label, metric }: any) => {
   if (active && payload && payload.length) {
     const data = payload[0].payload; 
+    
+    const isDeliveries = metric === "DELIVERIES";
+    const isAvg = metric === "AVERAGE";
+
+    // Dynamically pull the correct data fields
+    const total = isAvg ? data.avgTotalLines : isDeliveries ? data.totalDeliveries : data.totalLines;
+    const inScope = isAvg ? data.avgInScopeLines : isDeliveries ? data.inScopeDeliveries : data.inScopeLines;
+    
+    // Percentages are the same for Lines and Averages
+    const inScopePct = isDeliveries ? data.inScopeReworkPct_DELIVERIES : data.inScopeReworkPct_LINES;
+    const outScopePct = isDeliveries ? data.outScopeReworkPct_DELIVERIES : data.outScopeReworkPct_LINES;
+    
+    const term = isAvg ? "Avg Lines/Delivery" : isDeliveries ? "Deliveries" : "Lines Evaluated";
+
     return (
       <div className="bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-800 p-3 rounded-lg shadow-xl z-50 min-w-[200px]">
         <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-2 border-b border-slate-100 dark:border-slate-800 pb-1">{label} Volume Details</p>
         <div className="flex flex-col gap-1.5">
-          <p className="text-[10px] font-bold flex items-center justify-between gap-4 text-blue-500"><span>Total Lines Evaluated</span><span>{formatLargeNumber(data.totalLines)}</span></p>
-          <p className="text-[10px] font-bold flex items-center justify-between gap-4 text-rose-500"><span>In Scope (Our Error)</span><span>{formatLargeNumber(data.inScopeLines)}</span></p>
+          <p className="text-[10px] font-bold flex items-center justify-between gap-4 text-blue-500"><span>{term}</span><span>{formatLargeNumber(total)}</span></p>
+          <p className="text-[10px] font-bold flex items-center justify-between gap-4 text-rose-500"><span>In Scope (Our Error)</span><span>{formatLargeNumber(inScope)}</span></p>
           <div className="h-px w-full bg-slate-100 dark:bg-slate-800 my-1"></div>
-          <p className="text-[10px] font-bold flex items-center justify-between gap-4 text-emerald-500"><span>Rework: In-Scope</span><span>{data.inScopeReworkPct}%</span></p>
-          <p className="text-[10px] font-bold flex items-center justify-between gap-4 text-purple-500"><span>Rework: Out-of-Scope</span><span>{data.outScopeReworkPct}%</span></p>
+          <p className="text-[10px] font-bold flex items-center justify-between gap-4 text-emerald-500"><span>Rework: In-Scope</span><span>{inScopePct}%</span></p>
+          <p className="text-[10px] font-bold flex items-center justify-between gap-4 text-purple-500"><span>Rework: Out-of-Scope</span><span>{outScopePct}%</span></p>
         </div>
       </div>
     );
@@ -216,6 +237,7 @@ const DeliveryDashboard = () => {
   const [filterStatus, setFilterStatus] = useState<"ALL" | "ON_TIME" | "DELAYED" | "REWORK">("ALL");
   const [selectedMonth, setSelectedMonth] = useState<string>("ALL");
   const [selectedDay, setSelectedDay] = useState<string>("ALL");
+  const [selectedWeek, setSelectedWeek] = useState<string>("ALL");
   const [selectedOffice, setSelectedOffice] = useState<string>("ALL");
   const [selectedSport, setSelectedSport] = useState<string>("ALL");
   const [selectedRecord, setSelectedRecord] = useState<any | null>(null);
@@ -224,19 +246,24 @@ const DeliveryDashboard = () => {
   const [scatterX, setScatterX] = useState("expectedEffort");
   const [scatterY, setScatterY] = useState("actualSpent");
 
-
   // Drill-down states
   const [roscoSearch, setRoscoSearch] = useState("");
   const [workloadStartDate, setWorkloadStartDate] = useState("");
   const [workloadEndDate, setWorkloadEndDate] = useState("");
   const [workloadView, setWorkloadView] = useState<"MONTH" | "DAY">("MONTH"); 
-  const [daysSavedView, setDaysSavedView] = useState<"TREND" | "PROJECTS">("TREND");
+  const [daysSavedView, setDaysSavedView] = useState<"TREND" | "SPORTS">("TREND"); // RE-MAPPED TO TREND & SPORTS
+  const [workloadMetric, setWorkloadMetric] = useState<"LINES" | "DELIVERIES"| "AVERAGE">("LINES"); // <-- ADD THIS LINE
+  
 
   const [trendView, setTrendView] = useState<"MONTH" | "DAY">("MONTH");
   const [currentPage, setCurrentPage] = useState(1);
+  const [missedDrilldownMonth, setMissedDrilldownMonth] = useState<string | null>(null);
+
+  // Word Cloud Active Interactive State
+  const [selectedReworkReason, setSelectedReworkReason] = useState<string | null>(null);
   const rowsPerPage = 50;
 
-  
+
 
   const SCATTER_METRICS = [
     { val: "expectedEffort", label: "Expected Effort (hrs)" },
@@ -247,8 +274,42 @@ const DeliveryDashboard = () => {
     { val: "reworks", label: "Total Reworks" }
   ];
 
+  
+
   // --- 🧠 STEP 1: BASE DATA NORMALIZATION ---
   const normalizedData = useMemo(() => {
+    // 🛟 Bulletproof internal date parsing engine to handle standard and European variants
+    const parseSecureDate = (dateInput: any): Date | null => {
+      if (!dateInput) return null;
+      let cleanStr = String(dateInput).trim();
+      if (
+        cleanStr === "" || 
+        cleanStr.toLowerCase() === "unknown" || 
+        cleanStr.toLowerCase() === "discarded" || 
+        cleanStr.toLowerCase() === "pending" ||
+        cleanStr === "-"
+      ) {
+        return null;
+      }
+
+      // Detect European dot patterns (18.02.2026) or numerical dashes (21-05-2026)
+      if (cleanStr.includes(".") || (cleanStr.includes("-") && !cleanStr.match(/[a-zA-Z]/))) {
+        const parts = cleanStr.split(/[\.-]/);
+        if (parts.length === 3) {
+          const day = parts[0].padStart(2, '0');
+          const month = parts[1].padStart(2, '0');
+          let year = parts[2];
+          if (year.length === 2) year = "20" + year;
+
+          // Normalize completely to standardized YYYY-MM-DD
+          cleanStr = `${year}-${month}-${day}`;
+        }
+      }
+
+      const d = new Date(cleanStr);
+      return isNaN(d.getTime()) ? null : d;
+    };
+
     return rawDeliveryData
       .map((row: any) => {
         const delayDays = Number(row.delay_severity ?? row['Delay \nin days'] ?? 0);
@@ -265,41 +326,45 @@ const DeliveryDashboard = () => {
         const inScopeLines = Number(row.delivery_metrics?.Workload?.Passed ?? 0); 
         const outScopeLines = Number(row.delivery_metrics?.Workload?.Failed ?? 0); 
 
-        let baseDate = row.original_delivery_date || row['Original Delivery Date'] || "Unknown";
+        // Extract primary date using the secure parsing engine
+        const baseDateStr = row.original_delivery_date || row['Original Delivery Date'] || "Unknown";
+        const parsedBaseDate = parseSecureDate(baseDateStr);
+
         let monthYear = "TBD";
         let exactDay = "TBD";
         let sortableDay = "0000-00-00";
         let yearStr = "";
 
-        if (baseDate !== "Unknown" && baseDate !== "discarded" && baseDate.trim() !== "") {
-           const d = new Date(baseDate);
-           if (!isNaN(d.getTime())) {
-             monthYear = d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
-             exactDay = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-             sortableDay = d.toISOString().split('T')[0];
-             yearStr = d.getFullYear().toString();
-           }
+        if (parsedBaseDate) {
+          monthYear = parsedBaseDate.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+          exactDay = parsedBaseDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          
+          // 🔥 FIXED: Extract exact local elements to prevent off-by-one timezone drops
+          const locYear = parsedBaseDate.getFullYear();
+          const locMonth = String(parsedBaseDate.getMonth() + 1).padStart(2, '0');
+          const locDay = String(parsedBaseDate.getDate()).padStart(2, '0');
+          sortableDay = `${locYear}-${locMonth}-${locDay}`;
+          
+          yearStr = locYear.toString();
         }
 
+        // Handle SLA and Days Saved Logic via local comparison
         let daysSaved = 0;
         let finalSlaStatus = "MISSED"; 
 
-        if (row.original_delivery_date) {
-            const orig = new Date(row.original_delivery_date);
-            if (row.actual_delivered_date) {
-                const act = new Date(row.actual_delivered_date);
-                if (!isNaN(orig.getTime()) && !isNaN(act.getTime())) {
-                    const diffTime = orig.getTime() - act.getTime();
-                    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                    daysSaved = diffDays > 0 ? diffDays : 0; 
-                    finalSlaStatus = act.getTime() <= orig.getTime() ? "MET" : "MISSED";
-                }
+        const origDateObj = parseSecureDate(row.original_delivery_date || row['Original Delivery Date']);
+        const actDateObj = parseSecureDate(row.actual_delivered_date || row['Delivered Date']);
+
+        if (origDateObj) {
+            if (actDateObj) {
+                const diffTime = origDateObj.getTime() - actDateObj.getTime();
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                daysSaved = diffDays > 0 ? diffDays : 0; 
+                finalSlaStatus = actDateObj.getTime() <= origDateObj.getTime() ? "MET" : "MISSED";
             } else {
                 const today = new Date();
                 today.setHours(0, 0, 0, 0);
-                if (!isNaN(orig.getTime())) {
-                    finalSlaStatus = orig.getTime() < today.getTime() ? "MISSED" : "PENDING";
-                }
+                finalSlaStatus = origDateObj.getTime() < today.getTime() ? "MISSED" : "PENDING";
             }
         }
 
@@ -319,6 +384,7 @@ const DeliveryDashboard = () => {
           _year: yearStr, 
           _client: row.client_account || row['Product/Client'] || "Unknown",
           _fte: row.owner_fte || row.FTE || "Unassigned",
+          _week: row.cw || row.CW || "Unknown",
           _poc: row.POC || row.manager || "Unassigned",
           _sport: row.Sport || row.sport_category || "Unassigned",
           _office: row.Office || row.office_location || "Unassigned",
@@ -334,13 +400,15 @@ const DeliveryDashboard = () => {
       .filter((row: any) => row._year === "2026");
   }, [rawDeliveryData]);
 
-  // --- 🧠 STEP 2: EXTRACT DROPDOWN OPTIONS ---
-  const { availableOffices, availableSports, availableMonths, availableDays } = useMemo(() => {
+  // 👇 --- 🧠 MAKE SURE THIS STEP 2 BLOCK IS PRESENT RIGHT HERE --- 👇
+  const { availableOffices, availableSports, availableMonths, availableDays, availableWeeks } = useMemo(() => {
     const offices = Array.from(new Set(normalizedData.map(r => r._office))).filter(Boolean).sort();
     const sports = Array.from(new Set(normalizedData.map(r => r._sport))).filter(Boolean).sort();
     
     const monthMap = new Map();
     const dayMap = new Map();
+    const weekMap = new Map();
+    
     normalizedData.forEach(r => {
       if (r._monthYear !== "TBD") {
         if (!monthMap.has(r._monthYear) || r._sortableDay < monthMap.get(r._monthYear)) {
@@ -348,36 +416,114 @@ const DeliveryDashboard = () => {
         }
       }
       if (r._sortableDay !== "0000-00-00") {
-        dayMap.set(r._sortableDay, { label: r._exactDay, month: r._monthYear });
+        dayMap.set(r._sortableDay, { label: r._exactDay, month: r._monthYear, week: r._week });
+      }
+      if (r._week !== "Unknown" && r._week !== "") {
+        if (!weekMap.has(r._week)) {
+          weekMap.set(r._week, new Set());
+        }
+        if (r._monthYear !== "TBD") {
+          weekMap.get(r._week).add(r._monthYear);
+        }
       }
     });
+
     return {
         availableOffices: offices,
         availableSports: sports,
         availableMonths: Array.from(monthMap.entries()).sort((a, b) => a[1].localeCompare(b[1])).map(e => e[0]),
-        availableDays: Array.from(dayMap.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(e => ({ val: e[0], label: e[1].label, month: e[1].month }))
+        availableDays: Array.from(dayMap.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(e => ({ val: e[0], label: e[1].label, month: e[1].month, week: e[1].week })),
+        availableWeeks: Array.from(weekMap.entries()).sort((a, b) => Number(a[0]) - Number(b[0])).map(e => ({ val: e[0], label: `CW ${e[0]}`, months: e[1] }))
     };
   }, [normalizedData]);
 
-  // --- 🧠 STEP 3: WORKLOAD & REWORK ANALYSIS ---
+  // --- 🧠 STEP 3: WORKLOAD & REWORK ANALYSIS (WITH REWORK REASON TRACKING) ---
+  
+// --- 🧠 STEP 3: WORKLOAD & REWORK ANALYSIS (ADVANCED INTERACTIVE WORD CLOUD ENGINE) ---
+  // --- 🧠 STEP 3: WORKLOAD & REWORK ANALYSIS (STRICT UNIQUE COUNTS) ---
   const workloadAnalysis = useMemo(() => {
-      let data = normalizedData;
-      
-      if (workloadStartDate) data = data.filter(r => r._sortableDay >= workloadStartDate);
-      if (workloadEndDate) data = data.filter(r => r._sortableDay <= workloadEndDate);
+      let data = normalizedData.filter((row: any) => {
+        if (row.Job === 'RR') return false;
+        if (row._roscoStatus.toLowerCase() !== 'confirmed') return false;
+
+        const s = searchTerm.toLowerCase();
+        const matchesSearch = row._client.toLowerCase().includes(s) || 
+                              row._fte.toLowerCase().includes(s) || 
+                              row._poc.toLowerCase().includes(s) || 
+                              row._id.toString().includes(s);
+        
+        const matchesOffice = selectedOffice === "ALL" || row._office === selectedOffice;
+        const matchesSport = selectedSport === "ALL" || row._sport === selectedSport;
+
+        if (workloadStartDate || workloadEndDate) {
+          let matchesRange = true;
+          if (workloadStartDate && row._sortableDay < workloadStartDate) matchesRange = false;
+          if (workloadEndDate && row._sortableDay > workloadEndDate) matchesRange = false;
+          return matchesRange && matchesOffice && matchesSport && matchesSearch;
+        } else {
+          const matchesMonth = selectedMonth === "ALL" || row._monthYear === selectedMonth;
+          const matchesWeek = selectedWeek === "ALL" || row._week === selectedWeek;
+          const matchesDay = selectedDay === "ALL" || row._sortableDay === selectedDay;
+          return matchesMonth && matchesWeek && matchesDay && matchesOffice && matchesSport && matchesSearch;
+        }
+      });
 
       let totalLines = 0, totalInScope = 0;
       let reworkTotalLines = 0, reworkInScope = 0, reworkOutScope = 0;
+      
+      const globalUniqueDeliveryIds = new Set();
+      let inScopeDeliveries = 0, outScopeDeliveries = 0;
+
       const chartMap: Record<string, any> = {};
+      const reasonMap: Record<string, any> = {};
+      // Track uniqueness per day/month bucket
+      const chartUniqueTracker: Record<string, Set<string>> = {}; 
 
       data.forEach((row: any) => {
           totalLines += row._totalLines;
           totalInScope += row._inScopeLines;
+          
+          const deliveryKey = row._deliveryId || "Unknown-ID";
+          const isGlobalNewDelivery = !globalUniqueDeliveryIds.has(deliveryKey);
+          
+          if (isGlobalNewDelivery) {
+              globalUniqueDeliveryIds.add(deliveryKey);
+          }
+          
+          const hasInScopeError = row._inScopeLines > 0;
+          const hasOutScopeError = row._outScopeLines > 0;
+          
+          if (isGlobalNewDelivery) {
+              if (hasInScopeError) {
+                  inScopeDeliveries += 1;
+              } else if (hasOutScopeError) {
+                  outScopeDeliveries += 1;
+              }
+          }
 
           if (row._isRework) {
               reworkTotalLines += row._totalLines;
               reworkInScope += row._inScopeLines;
               reworkOutScope += row._outScopeLines;
+          }
+
+          const rawReasonString = row['Rework Reason'] || "";
+          if (rawReasonString && rawReasonString !== "N/A" && rawReasonString !== "-") {
+              const individualReasons = rawReasonString.split(/,|\n|;/);
+              individualReasons.forEach((reason: string) => {
+                  const cleanedReason = reason.replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
+                  if (cleanedReason && cleanedReason.toLowerCase() !== "none" && cleanedReason.toLowerCase() !== "na") {
+                      if (!reasonMap[cleanedReason]) {
+                          reasonMap[cleanedReason] = { text: cleanedReason, value: 0, clients: {}, ftes: {}, roscoIds: [] };
+                      }
+                      reasonMap[cleanedReason].value += 1;
+                      const clientName = row._client;
+                      reasonMap[cleanedReason].clients[clientName] = (reasonMap[cleanedReason].clients[clientName] || 0) + 1;
+                      if (!reasonMap[cleanedReason].roscoIds.includes(row._id)) {
+                          reasonMap[cleanedReason].roscoIds.push(row._id);
+                      }
+                  }
+              });
           }
 
           const groupKey = workloadView === "MONTH" ? row._monthYear : row._sortableDay;
@@ -388,11 +534,27 @@ const DeliveryDashboard = () => {
                   chartMap[groupKey] = { 
                       label: displayLabel, sortable: row._sortableDay, 
                       totalLines: 0, inScopeLines: 0, 
-                      reworkTotal: 0, reworkInScope: 0, reworkOutScope: 0
+                      reworkTotal: 0, reworkInScope: 0, reworkOutScope: 0,
+                      totalDeliveries: 0, inScopeDeliveries: 0, outScopeDeliveries: 0
                   };
+                  chartUniqueTracker[groupKey] = new Set();
               }
+              
               chartMap[groupKey].totalLines += row._totalLines;
               chartMap[groupKey].inScopeLines += row._inScopeLines;
+              
+              // Only increment chart counts if the delivery ID is new for this specific date group
+              const isChartGroupNewDelivery = !chartUniqueTracker[groupKey].has(deliveryKey);
+              if (isChartGroupNewDelivery) {
+                  chartUniqueTracker[groupKey].add(deliveryKey);
+                  chartMap[groupKey].totalDeliveries += 1;
+                  
+                  if (hasInScopeError) {
+                      chartMap[groupKey].inScopeDeliveries += 1;
+                  } else if (hasOutScopeError) {
+                      chartMap[groupKey].outScopeDeliveries += 1;
+                  }
+              }
               
               if (row._isRework) {
                   chartMap[groupKey].reworkTotal += row._totalLines;
@@ -405,21 +567,35 @@ const DeliveryDashboard = () => {
       const chartData = Object.values(chartMap).sort((a:any,b:any) => a.sortable.localeCompare(b.sortable)).map((m: any) => {
           return {
               ...m,
-              inScopeReworkPct: m.reworkTotal > 0 ? Number(((m.reworkInScope / m.reworkTotal) * 100).toFixed(1)) : 0,
-              outScopeReworkPct: m.reworkTotal > 0 ? Number(((m.reworkOutScope / m.reworkTotal) * 100).toFixed(1)) : 0,
+              avgTotalLines: m.totalDeliveries > 0 ? Math.round(m.totalLines / m.totalDeliveries) : 0,
+              avgInScopeLines: m.totalDeliveries > 0 ? Math.round(m.inScopeLines / m.totalDeliveries) : 0,
+              inScopeReworkPct_LINES: m.reworkTotal > 0 ? Number(((m.reworkInScope / m.reworkTotal) * 100).toFixed(1)) : 0,
+              outScopeReworkPct_LINES: m.reworkTotal > 0 ? Number(((m.reworkOutScope / m.reworkTotal) * 100).toFixed(1)) : 0,
+              inScopeReworkPct_DELIVERIES: m.totalDeliveries > 0 ? Number(((m.inScopeDeliveries / m.totalDeliveries) * 100).toFixed(1)) : 0,
+              outScopeReworkPct_DELIVERIES: m.totalDeliveries > 0 ? Number(((m.outScopeDeliveries / m.totalDeliveries) * 100).toFixed(1)) : 0,
           };
       });
       
-      const inScopeReworkPct = reworkTotalLines > 0 ? ((reworkInScope / reworkTotalLines) * 100).toFixed(1) : "0";
-      const outScopeReworkPct = reworkTotalLines > 0 ? ((reworkOutScope / reworkTotalLines) * 100).toFixed(1) : "0";
+      const totalDeliveries = globalUniqueDeliveryIds.size;
 
-      return { chartData, totalLines, totalInScope, inScopeReworkPct, outScopeReworkPct };
-  }, [normalizedData, workloadStartDate, workloadEndDate, workloadView]);
+      const inScopeReworkPct_LINES = totalLines > 0 ? ((reworkInScope / totalLines) * 100).toFixed(1) : "0";
+      const outScopeReworkPct_LINES = totalLines > 0 ? ((reworkOutScope / totalLines) * 100).toFixed(1) : "0";
+      const inScopeReworkPct_DELIVERIES = totalDeliveries > 0 ? ((inScopeDeliveries / totalDeliveries) * 100).toFixed(1) : "0";
+      const outScopeReworkPct_DELIVERIES = totalDeliveries > 0 ? ((outScopeDeliveries / totalDeliveries) * 100).toFixed(1) : "0";
+      const avgTotalLines = totalDeliveries > 0 ? Math.round(totalLines / totalDeliveries) : 0;
+      const avgInScopeLines = totalDeliveries > 0 ? Math.round(totalInScope / totalDeliveries) : 0;
+      const reworkReasons = Object.values(reasonMap).sort((a: any, b: any) => b.value - a.value);
 
+      return { 
+        chartData, totalLines, totalInScope, inScopeReworkPct_LINES, outScopeReworkPct_LINES,
+        totalDeliveries, inScopeDeliveries, inScopeReworkPct_DELIVERIES, outScopeReworkPct_DELIVERIES,
+        avgTotalLines, avgInScopeLines, reworkReasons
+      };
+  }, [normalizedData, workloadStartDate, workloadEndDate, workloadView, selectedMonth, selectedWeek, selectedDay, selectedOffice, selectedSport, searchTerm, workloadMetric]);
   // --- 🧠 STEP 4: GLOBAL DASHBOARD FILTERS & AGGREGATE ---
   const { 
-    filteredData, kpis, monthlyTrends, dailyTrends, ftePerformance, pocRollup, reworkStats,
-    reportTypes, regionalSportMatrix, assignmentReadiness, performanceTrends, topSavedProjects
+    filteredData, kpis, monthlyTrends, dailyTrends, sportSavedTrends, ftePerformance, pocRollup, reworkStats,
+    reportTypes, regionalSportMatrix, assignmentReadiness, performanceTrends
   } = useMemo(() => {
     
     let finalData = normalizedData.filter((row: any) => {
@@ -438,8 +614,9 @@ const DeliveryDashboard = () => {
       const matchesSport = selectedSport === "ALL" || row._sport === selectedSport;
       const matchesMonth = selectedMonth === "ALL" || row._monthYear === selectedMonth;
       const matchesDay = selectedDay === "ALL" || row._sortableDay === selectedDay;
+      const matchesWeek = selectedWeek === "ALL" || row._week === selectedWeek;
 
-      return matchesSearch && matchesStatus && matchesOffice && matchesSport && matchesMonth && matchesDay;
+      return matchesSearch && matchesStatus && matchesOffice && matchesSport && matchesMonth && matchesDay && matchesWeek;
     });
 
     let totalDelays = 0, sumDelayDays = 0, totalReworks = 0;
@@ -452,7 +629,7 @@ const DeliveryDashboard = () => {
     const pocMap: Record<string, any> = {};
     const reportTypeMap: Record<string, number> = {};
     const regSportMap: Record<string, any> = {};
-    const clientSavedMap: Record<string, number> = {};
+    const sportSavedMap: Record<string, any> = {}; // GROUP BY SPORT FOR AVERAGES
     let assignedCount = 0, pendingCount = 0;
 
     finalData.forEach((row: any) => {
@@ -468,10 +645,13 @@ const DeliveryDashboard = () => {
       }
       
       totalDaysSaved += row._daysSaved;
-
-      if (row._daysSaved > 0) {
-          clientSavedMap[row._client] = (clientSavedMap[row._client] || 0) + row._daysSaved;
+      
+      // --- DAYS SAVED AVERAGE BY SPORT ---
+      if (!sportSavedMap[row._sport]) {
+          sportSavedMap[row._sport] = { name: row._sport, totalDaysSaved: 0, volume: 0 };
       }
+      sportSavedMap[row._sport].totalDaysSaved += row._daysSaved;
+      sportSavedMap[row._sport].volume += 1;
       
       if (row._slaStatus === "MET") totalMet++;
       else if (row._slaStatus === "MISSED") totalMissed++;
@@ -483,7 +663,7 @@ const DeliveryDashboard = () => {
         };
       }
       monthlyMap[row._monthYear].volume += 1;
-      monthlyMap[row._monthYear].daysSaved += row._daysSaved;
+      monthlyMap[row._monthYear].daysSaved += row._daysSaved; // SUMMING UP HERE FOR MONTHLY AVERAGE
       
       if (row._slaStatus === "MET") monthlyMap[row._monthYear].met += 1;
       else if (row._slaStatus === "MISSED") monthlyMap[row._monthYear].missed += 1;
@@ -526,15 +706,26 @@ const DeliveryDashboard = () => {
 
     const COLORS = ['#f43f5e', '#f97316', '#f59e0b', '#8b5cf6', '#64748b', '#0ea5e9', '#10b981'];
 
+    // --- MONTHLY AVERAGE TREND ---
     const perfTrends = Object.values(monthlyMap).filter((m:any) => m.label !== "TBD").sort((a:any, b:any) => a.sortable.localeCompare(b.sortable))
       .map((m:any) => {
           const validMonthVol = m.met + m.missed; 
           return { 
               ...m, 
               avgDelay: m.delayed > 0 ? (m.delayDays / m.delayed).toFixed(1) : 0,
+              avgDaysSaved: m.volume > 0 ? Number((m.daysSaved / m.volume).toFixed(1)) : 0, // AVERAGE DAYS SAVED PER MONTH
               slaRate: validMonthVol > 0 ? Number(((m.met / validMonthVol) * 100).toFixed(1)) : 0 
           };
       });
+      
+    // --- SPORT SAVED AVERAGE TREND ---
+    const sportSavedTrendsData = Object.values(sportSavedMap)
+      .map((s: any) => ({ 
+          name: truncateText(s.name, 18), 
+          value: s.volume > 0 ? Number((s.totalDaysSaved / s.volume).toFixed(1)) : 0 
+      }))
+      .filter((s: any) => s.value > 0)
+      .sort((a: any, b: any) => b.value - a.value);
 
     const fteArray = Object.values(fteMap).map((f: any) => ({
         ...f,
@@ -550,34 +741,34 @@ const DeliveryDashboard = () => {
       effortBurn: p.expectedH > 0 ? ((p.actualH / p.expectedH) * 100).toFixed(0) : 0
     })).sort((a: any, b: any) => b.total - a.total);
 
-    const topSavedProjects = Object.entries(clientSavedMap)
-      .map(([name, saved]) => ({ name: truncateText(name, 18), value: saved }))
-      .sort((a, b) => (b.value as number) - (a.value as number))
-      .slice(0, 6);
-      
     return { 
       filteredData: finalData,
       kpis: { 
         total: finalData.length, delays: totalDelays, reworks: totalReworks,
         avgDelay: totalDelays > 0 ? (sumDelayDays / totalDelays).toFixed(1) : "0",
-        effortBurn: validBurnExpected > 0 ? ((validBurnActual / validBurnExpected) * 100).toFixed(1) : "0",
-        totalDaysSaved: totalDaysSaved,
+        efficiencyGain: validBurnExpected > 0 ? (100 - ((validBurnActual / validBurnExpected) * 100)).toFixed(1) : "0",
+        avgDaysSaved: finalData.length > 0 ? (totalDaysSaved / finalData.length).toFixed(1) : "0", 
         overallSla: (totalMet + totalMissed) > 0 ? ((totalMet / (totalMet + totalMissed)) * 100).toFixed(1) : "0"
       },
+      sportSavedTrends: sportSavedTrendsData,
       performanceTrends: perfTrends,
       monthlyTrends: perfTrends.slice(-8), 
       dailyTrends: Object.values(dailyMap).filter((d:any) => d.sortable !== "0000-00-00").sort((a:any, b:any) => a.sortable.localeCompare(b.sortable)).map((d:any) => ({ ...d, avgDelay: d.delayed > 0 ? (d.delayDays / d.delayed).toFixed(1) : 0 })).slice(-30),
       ftePerformance: fteArray, 
       pocRollup: pocArray,
       reportTypes: Object.keys(reportTypeMap).map(k => ({ name: truncateText(k, 20), value: reportTypeMap[k] })).sort((a, b) => b.value - a.value).map((d, i) => ({ ...d, color: COLORS[i % COLORS.length] })), 
-      regionalSportMatrix: Object.values(regSportMap).sort((a: any, b: any) => b.total - a.total).slice(0, 6), 
+      regionalSportMatrix: Object.values(regSportMap).sort((a: any, b: any) => b.total - a.total),
       assignmentReadiness: { assigned: assignedCount, pending: pendingCount },
-      reworkStats: { expected: sumExpected.toFixed(0), actual: sumActual.toFixed(0) },
-      topSavedProjects
+      reworkStats: { expected: sumExpected.toFixed(0), actual: sumActual.toFixed(0) }
     };
-  }, [normalizedData, searchTerm, filterStatus, selectedMonth, selectedDay, selectedOffice, selectedSport]);
+  }, [normalizedData, searchTerm, filterStatus, selectedMonth, selectedDay, selectedWeek, selectedOffice, selectedSport]);
 
 
+  // --- DRILLDOWN DATA MEMO ---
+  const missedDrilldownData = useMemo(() => {
+    if (!missedDrilldownMonth) return [];
+    return filteredData.filter(r => r._monthYear === missedDrilldownMonth && r._slaStatus === "MISSED");
+  }, [filteredData, missedDrilldownMonth]);
 
   // --- 🧠 STEP 5: ROSCO ID DEEP DIVE CALCULATIONS (ADDED DELAY & REWORK DATA) ---
   const roscoAnalysis = useMemo(() => {
@@ -726,6 +917,20 @@ In terms of Service Level Agreements, the project ${delayText}. From an effort t
   if (isLoading) return <div className="flex items-center justify-center h-screen bg-[#F9FBFC] dark:bg-[#08090A]"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div></div>;
   if (isError) return <div className="flex items-center justify-center h-screen bg-[#F9FBFC] dark:bg-[#08090A] text-red-500 font-medium">Failed to load Delivery Analytics.</div>;
 
+  // --- DYNAMIC UI VARIABLES FOR WORKLOAD SCOPING ---
+  const displayTotal = workloadMetric === "AVERAGE" ? workloadAnalysis.avgTotalLines : workloadMetric === "DELIVERIES" ? workloadAnalysis.totalDeliveries : workloadAnalysis.totalLines;
+  const displayInScope = workloadMetric === "AVERAGE" ? workloadAnalysis.avgInScopeLines : workloadMetric === "DELIVERIES" ? workloadAnalysis.inScopeDeliveries : workloadAnalysis.totalInScope;
+  
+  const displayInScopePct = workloadMetric === "DELIVERIES" ? workloadAnalysis.inScopeReworkPct_DELIVERIES : workloadAnalysis.inScopeReworkPct_LINES;
+  const displayOutScopePct = workloadMetric === "DELIVERIES" ? workloadAnalysis.outScopeReworkPct_DELIVERIES : workloadAnalysis.outScopeReworkPct_LINES;
+
+  const titleTotal = workloadMetric === "AVERAGE" ? "Avg Evaluated" : workloadMetric === "DELIVERIES" ? "Total Deliveries" : "Total Evaluated";
+  const titleSub = workloadMetric === "AVERAGE" ? "lines/del" : workloadMetric === "DELIVERIES" ? "items" : "lines";
+
+  const chartKeyTotal = workloadMetric === "AVERAGE" ? "avgTotalLines" : workloadMetric === "DELIVERIES" ? "totalDeliveries" : "totalLines";
+  const chartKeyInScope = workloadMetric === "AVERAGE" ? "avgInScopeLines" : workloadMetric === "DELIVERIES" ? "inScopeDeliveries" : "inScopeLines";
+  const lineKeyInScope = workloadMetric === "DELIVERIES" ? "inScopeReworkPct_DELIVERIES" : "inScopeReworkPct_LINES";
+  const lineKeyOutScope = workloadMetric === "DELIVERIES" ? "outScopeReworkPct_DELIVERIES" : "outScopeReworkPct_LINES";
   
 
   return (
@@ -844,30 +1049,121 @@ In terms of Service Level Agreements, the project ${delayText}. From an effort t
         </div>
       )}
 
+      {/* MISSED SLA DRILLDOWN MODAL */}
+      {missedDrilldownMonth && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 sm:p-6 animate-in fade-in duration-300">
+          <div className="absolute inset-0" onClick={() => setMissedDrilldownMonth(null)}></div>
+          
+          {/* Widened modal to 90vw to fit 8 columns beautifully */}
+          <div className="relative w-full max-w-[90vw] bg-white dark:bg-[#0B0F1A] border border-slate-200 dark:border-slate-800 rounded-3xl shadow-2xl flex flex-col overflow-hidden z-10 max-h-[80vh]">
+            
+            <div className="flex justify-between items-center p-5 border-b border-slate-100 dark:border-slate-800/60 bg-rose-50 dark:bg-rose-500/5">
+              <div>
+                <h2 className="text-lg font-black text-slate-800 dark:text-white flex items-center gap-2">
+                  <AlertTriangle className="text-rose-500" /> SLA Missed Root Cause - {missedDrilldownMonth}
+                </h2>
+                <p className="text-[10px] text-slate-500 mt-1 font-bold">{missedDrilldownData.length} Deliveries missed the Original Delivery Date.</p>
+              </div>
+              <button onClick={() => setMissedDrilldownMonth(null)} className="p-2 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-full transition-colors text-slate-500"><X size={18} /></button>
+            </div>
+            
+            <div className="overflow-auto custom-scrollbar p-0 bg-slate-50/30 dark:bg-[#08090A]/50">
+              <table className="w-full text-left border-collapse min-w-[1000px]">
+                <thead className="sticky top-0 bg-slate-50 dark:bg-[#111623] z-10 border-b border-slate-200 dark:border-slate-800/60 shadow-sm">
+                  <tr className="text-[10px] uppercase tracking-widest text-slate-400">
+                    <th className="px-4 py-3 font-black">ID</th>
+                    <th className="px-4 py-3 font-black">Client</th>
+                    <th className="px-4 py-3 font-black">Event Detail</th>
+                    <th className="px-4 py-3 font-black">TV Event Report</th> {/* <-- NEW HEADER */}
+                    <th className="px-4 py-3 font-black">Monitoring Period</th>
+                    <th className="px-4 py-3 font-black">Original Date</th>
+                    <th className="px-4 py-3 font-black">Delivered Date</th>
+                    <th className="px-4 py-3 font-black text-rose-500">Delay Reason Logged</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/40">
+                  {missedDrilldownData.length === 0 ? (
+                    // {/* Increased colSpan to 8 */}
+                    <tr><td colSpan={8} className="p-5 text-center text-xs text-slate-500">No details found.</td></tr>
+                  ) : (
+                    missedDrilldownData.map((row: any, idx: number) => (
+                      <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-white/[0.02] transition-colors">
+                        <td className="px-4 py-3 text-xs font-bold text-slate-500">#{row._id}</td>
+                        <td className="px-4 py-3 text-xs font-bold dark:text-slate-200">{row._client}</td>
+                        <td className="px-4 py-3 text-xs text-slate-500">{row._reportType || "N/A"}</td>
+                        
+                        {/* 👇 NEW TV EVENT REPORT DATA 👇 */}
+                        <td className="px-4 py-3 text-xs text-slate-500">{row['TV Event Report'] || "N/A"}</td>
+                        
+                        <td className="px-4 py-3 text-xs font-medium text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                          {row['Monitoring Start Date'] || "?"} <span className="text-slate-400 font-normal mx-1">to</span> {row['Monitoring End Date'] || "?"}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">{row.original_delivery_date || "N/A"}</td>
+                        <td className="px-4 py-3 text-xs text-slate-500 font-medium whitespace-nowrap">
+                          {row.actual_delivered_date || <span className="italic text-slate-400">Pending</span>}
+                        </td>
+                        <td className="px-4 py-3 text-xs font-bold text-rose-600 dark:text-rose-400 max-w-[250px]">
+                          {row['Delivery Delay Reason'] || <span className="text-slate-400 font-normal italic">No delay reason logged</span>}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+            
+          </div>
+        </div>
+      )}
       {/* HEADER & CONTROLS */}
       <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 bg-white dark:bg-[#111623] p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
         <div>
           <h1 className="text-2xl font-black tracking-tight flex items-center gap-3">
-            <ShieldCheck className="text-blue-500" size={28} /> GMS DashBoard
+            <ShieldCheck className="text-blue-500" size={28} /> GMO DashBoard
           </h1>
           <p className="text-xs text-slate-500 mt-1">Analyzing <span className="font-bold text-blue-500">2026 Deliveries</span> ({kpis.total} records).</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto">
-          <CustomDropdown 
-            icon={CalendarDays}
-            defaultLabel="All Months"
-            value={selectedMonth}
-            options={availableMonths}
-            onChange={(val: string) => { setSelectedMonth(val); setSelectedDay("ALL"); }}
-          />
-          <CustomDropdown 
-            icon={Clock}
-            defaultLabel="All Days"
-            value={selectedDay}
-            options={availableDays.filter((d:any) => selectedMonth === "ALL" || d.month === selectedMonth)}
-            onChange={(val: string) => setSelectedDay(val)}
-          />
+          
+          {/* --- DATE/TIME FILTERS GROUP --- */}
+          <div className="flex flex-wrap items-center gap-2 bg-slate-50/50 dark:bg-slate-800/20 p-1.5 rounded-xl border border-slate-100 dark:border-slate-800/60">
+            <CustomDropdown 
+              icon={CalendarDays}
+              defaultLabel="All Months"
+              value={selectedMonth}
+              options={availableMonths}
+              onChange={(val: string) => { 
+                setSelectedMonth(val); 
+                setSelectedWeek("ALL"); // Reset week when month changes
+                setSelectedDay("ALL");  // Reset day when month changes
+              }}
+            />
+            <CustomDropdown 
+              icon={Hash}
+              defaultLabel="All Weeks"
+              value={selectedWeek}
+              // FILTER APPLIED HERE 👇
+              options={availableWeeks.filter((w:any) => selectedMonth === "ALL" || w.months.has(selectedMonth))}
+              onChange={(val: string) => {
+                setSelectedWeek(val);
+                setSelectedDay("ALL"); // Reset day when week changes
+              }}
+            />
+            <CustomDropdown 
+              icon={Clock}
+              defaultLabel="All Days"
+              value={selectedDay}
+              // FILTER APPLIED HERE 👇
+              options={availableDays.filter((d:any) => 
+                (selectedMonth === "ALL" || d.month === selectedMonth) &&
+                (selectedWeek === "ALL" || d.week === selectedWeek)
+              )}
+              onChange={(val: string) => setSelectedDay(val)}
+            />
+          </div>
+
+          {/* --- STRUCTURAL FILTERS --- */}
           <CustomDropdown 
             icon={Globe}
             defaultLabel="All Offices"
@@ -883,6 +1179,7 @@ In terms of Service Level Agreements, the project ${delayText}. From an effort t
             onChange={(val: string) => setSelectedSport(val)}
           />
 
+          {/* --- STATUS TOGGLES --- */}
           <div className="flex bg-slate-100 dark:bg-[#0B0F1A] p-1 rounded-lg w-full sm:w-auto">
             {["ALL", "ON_TIME", "DELAYED", "REWORK"].map((status) => (
               <button 
@@ -894,9 +1191,16 @@ In terms of Service Level Agreements, the project ${delayText}. From an effort t
             ))}
           </div>
 
+          {/* --- SEARCH BAR --- */}
           <div className="relative w-full sm:w-64">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
-            <input type="text" placeholder="Search Client, FTE..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full bg-slate-50 dark:bg-[#0B0F1A] border border-slate-200 dark:border-slate-700 text-xs font-bold rounded-lg pl-9 pr-3 py-2 outline-none focus:border-blue-500 transition-colors" />
+            <input 
+              type="text" 
+              placeholder="Search Client, FTE, ROSCO ID..." 
+              value={searchTerm} 
+              onChange={(e) => setSearchTerm(e.target.value)} 
+              className="w-full bg-slate-50 dark:bg-[#0B0F1A] border border-slate-200 dark:border-slate-700 text-xs font-bold rounded-lg pl-9 pr-3 py-2 outline-none focus:border-blue-500 transition-colors" 
+            />
           </div>
         </div>
       </div>
@@ -906,9 +1210,15 @@ In terms of Service Level Agreements, the project ${delayText}. From an effort t
         {[
           { title: "Total Volume", value: kpis.total, icon: <Activity />, color: "text-blue-500" },
           { title: "SLA Met Rate", value: `${kpis.overallSla}%`, icon: <ShieldCheck />, color: "text-emerald-500", tooltip: "Percentage of items that met the Original Delivery Date." },
-          { title: "Days Saved", value: `+${kpis.totalDaysSaved}d`, icon: <FastForward />, color: "text-indigo-500", tooltip: "Total cumulative days saved by delivering ahead of schedule." },
-          // { title: "Avg Delay", value: `${kpis.avgDelay}d`, icon: <Clock />, color: "text-amber-500" },
-          { title: "Effort Burn Rate", value: `${kpis.effortBurn}%`, icon: <Target />, color: Number(kpis.effortBurn) > 100 ? "text-rose-500" : "text-emerald-500" }
+          { title: "Avg Days Saved", value: `+${kpis.avgDaysSaved}d`, icon: <FastForward />, color: "text-indigo-500", tooltip: "Average days saved per delivery." },
+          // { title: "Effort Burn Rate", value: `${kpis.effortBurn}%`, icon: <Target />, color: Number(kpis.effortBurn) > 100 ? "text-rose-500" : "text-emerald-500" }
+          { 
+            title: "Efficiency Gain", 
+            value: `${Number(kpis.efficiencyGain) > 0 ? '+' : ''}${kpis.efficiencyGain}%`, 
+            icon: <Target />, 
+            color: Number(kpis.efficiencyGain) < 0 ? "text-rose-500" : "text-emerald-500",
+            tooltip: "Percentage of expected effort saved versus actual time spent."
+          }
         ].map((kpi, idx) => (
           <div key={idx} className="bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-800/60 rounded-xl p-4 shadow-sm flex items-center justify-between group">
             <div>
@@ -930,12 +1240,28 @@ In terms of Service Level Agreements, the project ${delayText}. From an effort t
           </div>
           <div className="flex-1 w-full text-xs">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={performanceTrends} margin={{ top: 20, right: 10, left: -20, bottom: 0 }}>
+              {/* 👇 MOVED ONCLICK & CURSOR HERE TO MAKE THE WHOLE COLUMN CLICKABLE 👇 */}
+              <BarChart 
+                data={performanceTrends} 
+                margin={{ top: 20, right: 10, left: -20, bottom: 0 }}
+                className="cursor-pointer"
+                onClick={(state) => {
+                  if (state && state.activeLabel) {
+                     // Check if this month actually has missed items before opening modal
+                     const monthData = performanceTrends.find((m: any) => m.label === state.activeLabel);
+                     if (monthData && monthData.missed > 0) {
+                        setMissedDrilldownMonth(state.activeLabel);
+                     }
+                  }
+                }}
+              >
                 <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.1} />
                 <XAxis dataKey="label" axisLine={false} tickLine={false} />
                 <YAxis axisLine={false} tickLine={false} />
                 <RechartsTooltip content={<SlaTooltip />} cursor={{ fill: 'transparent' }} />
                 <Legend wrapperStyle={{ fontSize: '10px', fontWeight: 'bold', paddingTop: '10px' }} />
+                
+                {/* Notice: I removed onClick from the red bar below, because the chart handles it now! */}
                 <Bar dataKey="met" name="Met Target" stackId="a" fill="#10b981" radius={[0, 0, 0, 0]} maxBarSize={50}><LabelList dataKey="met" position="inside" fill="#ffffff" fontSize={10} fontWeight="bold" formatter={(value: number) => value > 0 ? value : ""} /></Bar>
                 <Bar dataKey="pending" name="Pending (Future)" stackId="a" fill="#94a3b8" radius={[0, 0, 0, 0]} maxBarSize={50}><LabelList dataKey="pending" position="inside" fill="#ffffff" fontSize={10} fontWeight="bold" formatter={(value: number) => value > 0 ? value : ""} /></Bar>
                 <Bar dataKey="missed" name="Missed Target" stackId="a" fill="#f43f5e" radius={[4, 4, 0, 0]} maxBarSize={50}><LabelList dataKey="missed" position="inside" fill="#ffffff" fontSize={10} fontWeight="bold" formatter={(value: number) => value > 0 ? value : ""} /></Bar>
@@ -944,11 +1270,11 @@ In terms of Service Level Agreements, the project ${delayText}. From an effort t
           </div>
         </div>
 
-        {/* 2. DAYS SAVED COMBINED CARD (TREND VS LEADERBOARD TOGGLE) */}
+        {/* 2. DAYS SAVED COMBINED CARD (SPORT VS LEADERBOARD TOGGLE) */}
         <div className="bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-800/60 rounded-xl p-5 shadow-sm h-80 flex flex-col">
           <div className="flex justify-between items-center mb-4">
             <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 flex items-center gap-2">
-              <FastForward size={14} className="text-indigo-500"/> Days Saved Analysis
+              <FastForward size={14} className="text-indigo-500"/> Avg Days Saved Analysis
             </h3>
             
             {/* THE TOGGLE BUTTONS */}
@@ -960,47 +1286,51 @@ In terms of Service Level Agreements, the project ${delayText}. From an effort t
                 TREND
               </button>
               <button 
-                onClick={() => setDaysSavedView("PROJECTS")} 
-                className={`px-2 py-1 text-[9px] font-black rounded transition-all ${daysSavedView === "PROJECTS" ? "bg-white dark:bg-slate-700 shadow-sm text-indigo-500" : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"}`}
+                onClick={() => setDaysSavedView("SPORTS")} 
+                className={`px-2 py-1 text-[9px] font-black rounded transition-all ${daysSavedView === "SPORTS" ? "bg-white dark:bg-slate-700 shadow-sm text-indigo-500" : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"}`}
               >
-                PROJECTS
+                SPORTS
               </button>
             </div>
           </div>
 
           <div className="flex-1 w-full text-xs">
             {daysSavedView === "TREND" ? (
-              // --- VIEW 1: MONTHLY TREND ---
+              // --- VIEW 1: MONTHLY AVERAGE TREND ---
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={performanceTrends} margin={{ top: 20, right: 10, left: -20, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.1} />
                   <XAxis dataKey="label" axisLine={false} tickLine={false} />
                   <YAxis axisLine={false} tickLine={false} />
                   <RechartsTooltip content={<CustomTooltip />} cursor={{ fill: 'transparent' }} />
-                  <Bar dataKey="daysSaved" name="Total Days Saved" fill="#6366f1" radius={[4, 4, 0, 0]} maxBarSize={50}>
-                    <LabelList dataKey="daysSaved" position="top" fill="#6366f1" fontSize={10} fontWeight="bold" formatter={(v: number) => v > 0 ? `+${v}` : ""} />
+                  <Bar dataKey="avgDaysSaved" name="Avg Days Saved (Monthly)" fill="#6366f1" radius={[4, 4, 0, 0]} maxBarSize={50}>
+                    <LabelList dataKey="avgDaysSaved" position="top" fill="#6366f1" fontSize={10} fontWeight="bold" formatter={(v: number) => v > 0 ? `+${v}` : ""} />
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
             ) : (
-              // --- VIEW 2: TOP PROJECTS LEADERBOARD ---
-              topSavedProjects.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart layout="vertical" data={topSavedProjects} margin={{ top: 0, right: 40, left: 10, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} opacity={0.1} />
-                    <XAxis type="number" hide />
-                    <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10, fontWeight: 'bold' }} width={120} />
-                    <RechartsTooltip content={<CustomTooltip />} cursor={{ fill: 'transparent' }} />
-                    <Bar dataKey="value" name="Days Saved" fill="#8b5cf6" radius={[0, 4, 4, 0]} barSize={20}>
-                      <LabelList dataKey="value" position="right" fill="#8b5cf6" fontSize={11} fontWeight="black" formatter={(v: number) => `+${v}d`} />
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="h-full flex items-center justify-center text-xs text-slate-400 font-bold border border-dashed border-slate-200 dark:border-slate-800 rounded-xl">
-                  No early deliveries recorded.
-                </div>
-              )
+              // --- VIEW 2: AVERAGE BY SPORT LEADERBOARD ---
+              sportSavedTrends.filter((s: any) => s.value > 0).length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                {/* 1. Filter the zeros directly in the data prop so they don't draw empty bars */}
+                <BarChart layout="vertical" data={sportSavedTrends.filter((s: any) => s.value > 0)} margin={{ top: 0, right: 40, left: 10, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} opacity={0.1} />
+                  <XAxis type="number" hide />
+                  
+                  {/* 2. Added interval={0} to force every single sport name to show up */}
+                  <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} interval={0} tick={{ fill: '#64748b', fontSize: 10, fontWeight: 'bold' }} width={120} />
+                  
+                  <RechartsTooltip content={<CustomTooltip />} cursor={{ fill: 'transparent' }} />
+                  <Bar dataKey="value" name="Avg Days Saved (Sport)" fill="#8b5cf6" radius={[0, 4, 4, 0]} barSize={20}>
+                    <LabelList dataKey="value" position="right" fill="#8b5cf6" fontSize={11} fontWeight="black" formatter={(v: number) => v > 0 ? `+${v}d` : ""} />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-full flex items-center justify-center text-xs text-slate-400 font-bold border border-dashed border-slate-200 dark:border-slate-800 rounded-xl">
+                No early deliveries recorded.
+              </div>
+            )
             )}
           </div>
         </div>
@@ -1104,10 +1434,17 @@ In terms of Service Level Agreements, the project ${delayText}. From an effort t
             <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 flex items-center gap-2">
               <Scale size={14} className="text-blue-500"/> Workload Error Scoping
             </h3>
-            <p className="text-[10px] text-slate-500 mt-1">Compare total lines against lines failed due to errors (In Scope). </p>
+            <p className="text-[10px] text-slate-500 mt-1">Compare volume against those failed due to errors (In Scope).</p>
           </div>
           
           <div className="flex flex-wrap items-center gap-3">
+            {/* --- THE NEW 3-WAY TOGGLE --- */}
+            <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/80 p-1 rounded-md mr-2">
+              <button onClick={() => setWorkloadMetric("LINES")} className={`px-2 py-1 text-[9px] font-black rounded transition-all ${workloadMetric === "LINES" ? "bg-white dark:bg-slate-700 shadow-sm text-indigo-500" : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"}`}>LINES</button>
+              <button onClick={() => setWorkloadMetric("DELIVERIES")} className={`px-2 py-1 text-[9px] font-black rounded transition-all ${workloadMetric === "DELIVERIES" ? "bg-white dark:bg-slate-700 shadow-sm text-indigo-500" : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"}`}>DELIVERIES</button>
+              <button onClick={() => setWorkloadMetric("AVERAGE")} className={`px-2 py-1 text-[9px] font-black rounded transition-all ${workloadMetric === "AVERAGE" ? "bg-white dark:bg-slate-700 shadow-sm text-indigo-500" : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"}`}>AVG</button>
+            </div>
+
             <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/80 p-1 rounded-md">
               <button onClick={() => setWorkloadView("MONTH")} className={`px-2 py-1 text-[9px] font-black rounded transition-all ${workloadView === "MONTH" ? "bg-white dark:bg-slate-700 shadow-sm text-blue-500" : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"}`}>MONTHLY</button>
               <button onClick={() => setWorkloadView("DAY")} className={`px-2 py-1 text-[9px] font-black rounded transition-all ${workloadView === "DAY" ? "bg-white dark:bg-slate-700 shadow-sm text-blue-500" : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"}`}>DAILY</button>
@@ -1148,24 +1485,24 @@ In terms of Service Level Agreements, the project ${delayText}. From an effort t
           <div className="flex flex-col gap-4 w-full xl:w-1/5">
              <div className="bg-slate-50 dark:bg-[#0B0F1A] p-4 rounded-xl border border-slate-100 dark:border-slate-800/60 flex items-center justify-between">
                 <div>
-                  <p className="text-[10px] uppercase font-bold text-slate-500 mb-1">Total Evaluated</p>
-                  <p className="text-xl font-black text-blue-500">{formatLargeNumber(workloadAnalysis.totalLines)} lines</p>
+                  <p className="text-[10px] uppercase font-bold text-slate-500 mb-1">{titleTotal}</p>
+                  <p className="text-xl font-black text-blue-500">{formatLargeNumber(displayTotal)} {titleSub}</p>
                 </div>
              </div>
              <div className="bg-slate-50 dark:bg-[#0B0F1A] p-4 rounded-xl border border-slate-100 dark:border-slate-800/60 flex items-center justify-between">
                 <div>
-                  <p className="text-[10px] uppercase font-bold text-slate-500 mb-1">Total In-Scope Error</p>
-                  <p className="text-xl font-black text-rose-500">{formatLargeNumber(workloadAnalysis.totalInScope)} lines</p>
+                  <p className="text-[10px] uppercase font-bold text-slate-500 mb-1">In-Scope Error</p>
+                  <p className="text-xl font-black text-rose-500">{formatLargeNumber(displayInScope)} {titleSub}</p>
                 </div>
              </div>
              <div className="bg-slate-50 dark:bg-[#0B0F1A] p-4 rounded-xl border border-slate-100 dark:border-slate-800/60 flex items-center justify-between">
                 <div>
                   <p className="text-[10px] uppercase font-bold text-slate-500 mb-1">Rework: In-Scope</p>
-                  <p className="text-lg font-black text-emerald-500">{workloadAnalysis.inScopeReworkPct}%</p>
+                  <p className="text-lg font-black text-emerald-500">{displayInScopePct}%</p>
                 </div>
                 <div className="text-right">
                   <p className="text-[10px] uppercase font-bold text-slate-500 mb-1">Out-of-Scope</p>
-                  <p className="text-lg font-black text-slate-800 dark:text-white">{workloadAnalysis.outScopeReworkPct}%</p>
+                  <p className="text-lg font-black text-slate-800 dark:text-white">{displayOutScopePct}%</p>
                 </div>
              </div>
           </div>
@@ -1177,28 +1514,180 @@ In terms of Service Level Agreements, the project ${delayText}. From an effort t
                 <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{fontSize: 10}} />
                 <YAxis yAxisId="left" axisLine={false} tickLine={false} tick={{fontSize: 10}} tickFormatter={(v) => formatLargeNumber(v)} />
                 <YAxis yAxisId="right" orientation="right" axisLine={false} tickLine={false} tick={{fontSize: 10}} tickFormatter={(v) => `${v}%`} />
-                <RechartsTooltip content={<WorkloadTooltip />} cursor={{ fill: 'transparent' }} />
+                
+                <RechartsTooltip content={<WorkloadTooltip metric={workloadMetric} />} cursor={{ fill: 'transparent' }} />
                 <Legend wrapperStyle={{ fontSize: '10px', fontWeight: 'bold' }} />
                 
-                <Bar yAxisId="left" dataKey="totalLines" name="Total Evaluated" fill="#3b82f6" opacity={0.3} radius={[4, 4, 0, 0]} maxBarSize={50}>
-                  <LabelList dataKey="totalLines" position="top" fill="#3b82f6" fontSize={10} fontWeight="bold" formatter={(v: number) => v > 0 ? formatLargeNumber(v) : ""} />
+                <Bar yAxisId="left" dataKey={chartKeyTotal} name={titleTotal} fill="#3b82f6" opacity={0.3} radius={[4, 4, 0, 0]} maxBarSize={50}>
+                  <LabelList dataKey={chartKeyTotal} position="top" fill="#3b82f6" fontSize={10} fontWeight="bold" formatter={(v: number) => v > 0 ? formatLargeNumber(v) : ""} />
                 </Bar>
-                <Bar yAxisId="left" dataKey="inScopeLines" name="In Scope Error Lines" fill="#f43f5e" radius={[4, 4, 0, 0]} maxBarSize={50} />
+                <Bar yAxisId="left" dataKey={chartKeyInScope} name="In Scope Errors" fill="#f43f5e" radius={[4, 4, 0, 0]} maxBarSize={50} />
                 
-                <Line yAxisId="right" type="monotone" dataKey="inScopeReworkPct" name="Rework: In-Scope %" stroke="#10b981" strokeWidth={3} dot={{ r: 4 }} />
-                <Line yAxisId="right" type="monotone" dataKey="outScopeReworkPct" name="Rework: Out-of-Scope %" stroke="#a855f7" strokeWidth={3} dot={{ r: 4 }} />
+                <Line yAxisId="right" type="monotone" dataKey={lineKeyInScope} name="Rework: In-Scope %" stroke="#10b981" strokeWidth={3} dot={{ r: 4 }} />
+                <Line yAxisId="right" type="monotone" dataKey={lineKeyOutScope} name="Rework: Out-of-Scope %" stroke="#a855f7" strokeWidth={3} dot={{ r: 4 }} />
               </ComposedChart>
             </ResponsiveContainer>
           </div>
         </div>
       </div>
 
-      {/* MONTHLY SLA & EFFICIENCY TRENDS */}
-      {/* MONTHLY SLA & EFFICIENCY TRENDS */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mt-2">
-        
-        
+      {/* ADVANCED INTERACTIVE REWORK REASON BUBBLE CLOUD */}
+      <div className="bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-800/60 rounded-xl p-5 shadow-sm flex flex-col mt-2">
+        <div className="mb-4 border-b border-slate-100 dark:border-slate-800/60 pb-3 flex justify-between items-center">
+          <div>
+            <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 flex items-center gap-2">
+              <Layers size={14} className="text-indigo-500"/> Root Cause Bubble Cluster Engine
+            </h3>
+            <p className="text-[10px] text-slate-500 mt-1">
+              Bubble volumes scale dynamically based on total error counts. Click any bubble to isolate its impacted customer accounts.
+            </p>
+          </div>
+          {selectedReworkReason && (
+            <button 
+              onClick={() => setSelectedReworkReason(null)}
+              className="text-[10px] font-black text-rose-500 hover:text-rose-600 transition-colors uppercase tracking-wider bg-rose-50 dark:bg-rose-500/10 px-2 py-1 rounded-md"
+            >
+              Reset View
+            </button>
+          )}
+        </div>
 
+        {workloadAnalysis.reworkReasons.length > 0 ? (
+          (() => {
+            // Find the maximum value to scale the bubble diameters dynamically
+            const maxVal = Math.max(...workloadAnalysis.reworkReasons.map(r => r.value), 1);
+
+            return (
+              <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 min-h-[300px]">
+                
+                {/* LEFT PANEL: THE ORGANIC BUBBLE MOLECULAR CLUSTER */}
+                <div className="xl:col-span-2 flex flex-wrap gap-4 items-center justify-center p-6 bg-slate-50/40 dark:bg-[#0B0F1A]/20 rounded-2xl border border-slate-100 dark:border-slate-800/40 select-none transition-all duration-300 overflow-hidden">
+                  {workloadAnalysis.reworkReasons.map((reason, index) => {
+                    const isSelected = selectedReworkReason === reason.text;
+                    const isAnySelected = selectedReworkReason !== null;
+                    
+                    // Premium glowing pastel themes for true dimension mapping
+                    const themes = [
+                      "text-purple-600 dark:text-purple-400 bg-purple-50/80 dark:bg-purple-500/5 hover:bg-purple-100 dark:hover:bg-purple-500/10 border-purple-200/60 dark:border-purple-500/20 shadow-purple-500/5",
+                      "text-blue-600 dark:text-blue-400 bg-blue-50/80 dark:bg-blue-500/5 hover:bg-blue-100 dark:hover:bg-blue-500/10 border-blue-200/60 dark:border-blue-500/20 shadow-blue-500/5",
+                      "text-emerald-600 dark:text-emerald-400 bg-emerald-50/80 dark:bg-emerald-500/5 hover:bg-emerald-100 dark:hover:bg-emerald-500/10 border-emerald-200/60 dark:border-emerald-500/20 shadow-emerald-500/5",
+                      "text-rose-600 dark:text-rose-400 bg-rose-50/80 dark:bg-rose-500/5 hover:bg-rose-100 dark:hover:bg-rose-500/10 border-rose-200/60 dark:border-rose-500/20 shadow-rose-500/5",
+                      "text-amber-600 dark:text-amber-400 bg-amber-50/80 dark:bg-amber-500/5 hover:bg-amber-100 dark:hover:bg-amber-500/10 border-amber-200/60 dark:border-amber-500/20 shadow-amber-500/5",
+                      "text-teal-600 dark:text-teal-400 bg-teal-50/80 dark:bg-teal-500/5 hover:bg-teal-100 dark:hover:bg-teal-500/10 border-teal-200/60 dark:border-teal-500/20 shadow-teal-500/5"
+                    ];
+                    const activeTheme = themes[index % themes.length];
+
+                    // 🧮 DYNAMIC VOLUME CALCULATION
+                    // Diameters scale cleanly from 75px (smallest) up to 165px (largest)
+                    const minDiameter = 75;
+                    const maxDiameter = 165;
+                    const diameter = minDiameter + ((reason.value / maxVal) * (maxDiameter - minDiameter));
+
+                    // Font sizing coordinates with physical space availability
+                    const minFont = 10;
+                    const maxFont = 15;
+                    const fontSize = minFont + ((reason.value / maxVal) * (maxFont - minFont));
+
+                    return (
+                      <button
+                        key={index}
+                        onClick={() => setSelectedReworkReason(isSelected ? null : reason.text)}
+                        style={{ 
+                          width: `${diameter}px`, 
+                          height: `${diameter}px`, 
+                          fontSize: `${fontSize}px` 
+                        }}
+                        className={`aspect-square rounded-full border flex flex-col items-center justify-center p-3 text-center transition-all duration-300 transform outline-none group cursor-pointer shadow-sm hover:-translate-y-1.5 hover:shadow-lg break-words leading-tight
+                          ${isSelected 
+                            ? "bg-blue-600 dark:bg-blue-500 text-white dark:text-white border-blue-500 shadow-blue-500/20 ring-4 ring-blue-500/20 scale-105 z-10 font-black" 
+                            : `font-extrabold ${activeTheme}`
+                          }
+                          ${isAnySelected && !isSelected ? "opacity-25 scale-90 blur-[0.4px]" : "opacity-100"}
+                        `}
+                      >
+                        {/* Core Message Text clipped cleanly to prevent boundary overflow */}
+                        <span className="line-clamp-3 px-1 w-full text-center tracking-tight">
+                          {reason.text}
+                        </span>
+                        
+                        {/* Volume Indicator Tag inside the bubble */}
+                        <span className={`text-[9px] font-black px-1.5 py-0.2 rounded-full mt-1.5 transition-colors duration-300 block w-fit
+                          ${isSelected 
+                            ? "bg-white text-blue-600" 
+                            : "bg-slate-900/5 dark:bg-white/10 text-slate-500 dark:text-slate-400 group-hover:bg-white dark:group-hover:bg-slate-900"
+                          }`}
+                        >
+                          {reason.value}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* RIGHT PANEL: CONTEXTUAL ACCOUNT DEEP DIVE */}
+                <div className="bg-slate-50/60 dark:bg-[#0B0F1A]/40 border border-slate-200 dark:border-slate-800/60 rounded-2xl p-4 flex flex-col justify-between transition-all duration-300">
+                  {selectedReworkReason && workloadAnalysis.reworkReasons.find(r => r.text === selectedReworkReason) ? (() => {
+                    const target = workloadAnalysis.reworkReasons.find(r => r.text === selectedReworkReason);
+                    return (
+                      <div className="flex flex-col h-full justify-between text-xs gap-4 animate-in fade-in duration-200">
+                        <div className="flex justify-between items-start border-b border-slate-200 dark:border-slate-800 pb-2">
+                          <div>
+                            <span className="text-[9px] uppercase font-black text-blue-500 tracking-wider">Active Target</span>
+                            <p className="font-black text-slate-800 dark:text-white text-sm mt-0.5 truncate max-w-[180px]" title={target.text}>{target.text}</p>
+                          </div>
+                          <div className="text-right">
+                            <span className="text-[9px] uppercase font-black text-slate-400 tracking-wider">Frequency</span>
+                            <p className="font-black text-slate-700 dark:text-slate-300 text-sm mt-0.5">{target.value}x</p>
+                          </div>
+                        </div>
+
+                        {/* Affected Clients list */}
+                        <div className="flex-1 overflow-y-auto custom-scrollbar max-h-[190px] flex flex-col gap-2">
+                          <div>
+                            <span className="text-[9px] uppercase font-bold text-slate-400 block mb-1.5">Top Impacted Accounts</span>
+                            <div className="flex flex-col gap-1.5">
+                              {Object.entries(target.clients).map(([client, count]: any) => (
+                                <div key={client} className="flex justify-between items-center bg-white dark:bg-slate-900/60 p-2 rounded-xl border border-slate-100 dark:border-slate-800/40 font-semibold text-slate-700 dark:text-slate-300 shadow-2xs">
+                                  <span className="truncate max-w-[180px]">{client}</span>
+                                  <span className="font-black text-blue-500 text-[10px] bg-blue-50 dark:bg-blue-500/10 px-2 py-0.5 rounded-md">
+                                    {count} {count === 1 ? 'del' : 'dels'}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Streamlined Footer Panel */}
+                        <div className="border-t border-slate-200 dark:border-slate-800 pt-2 text-[10px] text-slate-400 font-bold flex items-center justify-between">
+                          <span>Total Impacted ROSCOs:</span>
+                          <strong className="text-slate-700 dark:text-slate-300 text-xs bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md">
+                            {target.roscoIds.length}
+                          </strong>
+                        </div>
+                        <p className="text-[9px] text-slate-400 mt-1 truncate">
+                          <strong>Target IDs:</strong> <span className="text-blue-500 font-black select-all">{target.roscoIds.join(", ")}</span>
+                        </p>
+                      </div>
+                    );
+                  })() : (
+                    <div className="h-full flex flex-col items-center justify-center text-center text-slate-400 font-medium p-4 gap-2">
+                      <Activity size={24} className="text-slate-300 dark:text-slate-700 animate-pulse" />
+                      <p className="text-[11px] leading-normal">
+                        No active focus.<br/>Select a root-cause bubble to instantly isolate customer account footprints.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+              </div>
+            );
+          })()
+        ) : (
+          <div className="h-24 flex items-center justify-center text-xs font-bold text-slate-400 bg-slate-50 dark:bg-[#0B0F1A]/30 rounded-xl border border-dashed border-slate-200 dark:border-slate-800">
+            No rework reasons logged for the selected filters.
+          </div>
+        )}
       </div>
 
       {/* CROSS-FUNCTIONAL INSIGHTS ROW */}
@@ -1207,16 +1696,33 @@ In terms of Service Level Agreements, the project ${delayText}. From an effort t
           <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 mb-4 flex items-center gap-2"><Network size={14} className="text-blue-500"/> Regional Sport Matrix (Cross-Functional)</h3>
           <div className="flex-1 w-full text-xs">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={regionalSportMatrix} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
+              {/* Changed BarChart to ComposedChart, and bumped margin top to 25 to fit labels */}
+              <ComposedChart data={regionalSportMatrix} margin={{ top: 25, right: 0, left: -20, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#334155" opacity={0.1} />
                 <XAxis dataKey="office" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#64748b' }} dy={10} />
                 <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#64748b' }} />
                 <RechartsTooltip content={<CustomTooltip />} />
                 <Legend wrapperStyle={{ fontSize: '9px', fontWeight: 'bold' }} />
-                {availableSports.slice(0, 6).map((sport: any, i: number) => (
-                  <Bar key={sport} dataKey={sport} stackId="a" fill={['#3b82f6', '#f97316', '#10b981', '#8b5cf6', '#f43f5e', '#f59e0b'][i]} radius={i === availableSports.length-1 ? [4,4,0,0] : [0,0,0,0]} />
-                ))}
-              </BarChart>
+                
+                {availableSports.map((sport: any, i: number) => {
+                  const dynamicColors = ['#3b82f6', '#f97316', '#10b981', '#8b5cf6', '#f43f5e', '#f59e0b', '#0ea5e9', '#d946ef', '#14b8a6', '#84cc16'];
+                  return (
+                    <Bar 
+                      key={sport} 
+                      dataKey={sport} 
+                      stackId="a" 
+                      fill={dynamicColors[i % dynamicColors.length]} 
+                      radius={i === availableSports.length-1 ? [4,4,0,0] : [0,0,0,0]} 
+                    />
+                  );
+                })}
+
+                {/* THE TRICK: An invisible line tracking the "total" to anchor our labels at the top */}
+                <Line dataKey="total" type="monotone" stroke="transparent" strokeWidth={0} dot={false} activeDot={false} isAnimationActive={false}>
+                   <LabelList dataKey="total" position="top" fill="#64748b" fontSize={11} fontWeight="black" formatter={(val: number) => val > 0 ? val : ""} />
+                </Line>
+
+              </ComposedChart>
             </ResponsiveContainer>
           </div>
         </div>
@@ -1248,6 +1754,8 @@ In terms of Service Level Agreements, the project ${delayText}. From an effort t
                   </div>
                 </div>
               </div>
+
+              
             </div>
           ) : <div className="flex-1 flex items-center justify-center text-xs font-medium text-slate-400">No report type data.</div>}
         </div>
@@ -1294,10 +1802,10 @@ In terms of Service Level Agreements, the project ${delayText}. From an effort t
             <div>
               <div className="flex justify-between text-xs font-black mb-2">
                 <span className="text-slate-500">Actual Spent</span>
-                <span className={Number(kpis.effortBurn) > 100 ? "text-rose-500" : "text-emerald-500"}>{reworkStats.actual} hrs ({kpis.effortBurn}%)</span>
+                <span className={Number(kpis.efficiencyGain) > 100 ? "text-rose-500" : "text-emerald-500"}>{reworkStats.actual} hrs ({kpis.efficiencyGain}%)</span>
               </div>
               <div className="h-4 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden flex">
-                <div className={`h-full ${Number(kpis.effortBurn) > 100 ? 'bg-rose-500' : 'bg-emerald-500'}`} style={{ width: `${Math.min(Number(kpis.effortBurn), 100)}%` }}></div>
+                <div className={`h-full ${Number(kpis.efficiencyGain) > 100 ? 'bg-rose-500' : 'bg-emerald-500'}`} style={{ width: `${Math.min(Number(kpis.efficiencyGain), 100)}%` }}></div>
               </div>
             </div>
           </div>
@@ -1382,69 +1890,6 @@ In terms of Service Level Agreements, the project ${delayText}. From an effort t
           )}
         </div>
       </div>
-
-      {/* MATRIX ROW */}
-      {/* <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        <div className="lg:col-span-2 bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-800/60 rounded-xl shadow-sm flex flex-col h-[400px]">
-          <div className="p-4 border-b border-slate-100 dark:border-slate-800/60 flex justify-between items-center">
-            <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 flex items-center gap-2"><User size={14} className="text-emerald-500"/> Advanced FTE Matrix</h3>
-          </div>
-          <div className="overflow-y-auto custom-scrollbar">
-            <table className="w-full text-left">
-              <thead className="sticky top-0 bg-slate-50 dark:bg-[#0B0F1A] text-[9px] uppercase tracking-widest text-slate-400 border-b border-slate-200 dark:border-slate-800 z-10">
-                <tr>
-                  <th className="px-4 py-3 font-black">FTE Name</th>
-                  <th className="px-4 py-3 font-black text-right">Volume</th>
-                  <th className="px-4 py-3 font-black text-right">SLA %</th>
-                  <th className="px-4 py-3 font-black text-right">Avg Delay</th>
-                  <th className="px-4 py-3 font-black text-right">Avg Error %</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-800/40">
-                {ftePerformance.map((fte: any, i: number) => (
-                  <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800/30">
-                    <td className="px-4 py-2 text-xs font-bold dark:text-slate-200">{fte.name}</td>
-                    <td className="px-4 py-2 text-xs font-medium text-right text-slate-500">{fte.total}</td>
-                    <td className="px-4 py-2 text-xs font-bold text-right"><span className={Number(fte.slaRate) < 90 ? "text-amber-500" : "text-emerald-500"}>{fte.slaRate}%</span></td>
-                    <td className="px-4 py-2 text-xs font-bold text-right"><span className={Number(fte.avgDelay) > 0 ? "text-rose-500" : "text-slate-500"}>{fte.avgDelay}d</span></td>
-                    <td className="px-4 py-2 text-xs font-bold text-right"><span className={Number(fte.avgError) > 5 ? "text-rose-500" : "text-slate-500"}>{fte.avgError}%</span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div className="lg:col-span-2 bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-800/60 rounded-xl shadow-sm flex flex-col h-[400px]">
-          <div className="p-4 border-b border-slate-100 dark:border-slate-800/60 flex justify-between items-center">
-            <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 flex items-center gap-2"><Briefcase size={14} className="text-purple-500"/> Manager (POC) Portfolio Health</h3>
-          </div>
-          <div className="overflow-y-auto custom-scrollbar">
-            <table className="w-full text-left">
-              <thead className="sticky top-0 bg-slate-50 dark:bg-[#0B0F1A] text-[9px] uppercase tracking-widest text-slate-400 border-b border-slate-200 dark:border-slate-800 z-10">
-                <tr>
-                  <th className="px-4 py-3 font-black">Manager / POC</th>
-                  <th className="px-4 py-3 font-black text-right">Portfolio Vol</th>
-                  <th className="px-4 py-3 font-black text-right">Team Size</th>
-                  <th className="px-4 py-3 font-black text-right">Health %</th>
-                  <th className="px-4 py-3 font-black text-right">Effort Burn %</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-800/40">
-                {pocRollup.map((poc: any, i: number) => (
-                  <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800/30">
-                    <td className="px-4 py-2 text-xs font-bold dark:text-slate-200">{poc.name}</td>
-                    <td className="px-4 py-2 text-xs font-medium text-right text-slate-500">{poc.total}</td>
-                    <td className="px-4 py-2 text-xs font-medium text-right text-slate-500">{poc.teamSize} FTEs</td>
-                    <td className="px-4 py-2 text-xs font-bold text-right"><span className={Number(poc.healthScore) < 90 ? "text-amber-500" : "text-emerald-500"}>{poc.healthScore}%</span></td>
-                    <td className="px-4 py-2 text-xs font-bold text-right"><span className={Number(poc.effortBurn) > 100 ? "text-rose-500" : "text-emerald-500"}>{poc.effortBurn}%</span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div> */}
 
       {/* MASTER DATA TABLE */}
       <div className="bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm overflow-hidden flex flex-col mt-2">
@@ -1541,4 +1986,3 @@ In terms of Service Level Agreements, the project ${delayText}. From an effort t
 };
 
 export default DeliveryDashboard;
-

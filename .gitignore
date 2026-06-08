@@ -16,4 +16,6 @@ __pycache__/
 
 
 src/saas_backend/authorized_user.json
+src/saas_backend/client_secrets.jsonsrc/saas_backend/service_account.json
+src/saas_backend/service_account.json
 src/saas_backend/client_secrets.json

@@ -65,13 +65,13 @@ DUMMY_PROJECTS: List[Project] = [
         "startDate": "2023-05-10T00:00:00Z", 
         "endDate": "2023-12-10T00:00:00Z" 
     }),
-    # Project.model_validate({ # Project ID 8
-    #     "id": 8, 
-    #     "name": "Golf", 
-    #     "description": "Hockey management system overhaul.", 
-    #     "startDate": "2023-03-01T00:00:00Z", 
-    #     "endDate": "2024-01-01T00:00:00Z" 
-    # }),
+    Project.model_validate({ # Project ID 8
+        "id": 8, 
+        "name": "Middle East Projects", 
+        "description": "Specific checks for ME.", 
+        "startDate": "2023-03-01T00:00:00Z", 
+        "endDate": "2024-01-01T00:00:00Z" 
+    }),
     # Project.model_validate({ # Project ID 9
     #     "id": 9, 
     #     "name": "India", 

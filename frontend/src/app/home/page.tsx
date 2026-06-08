@@ -426,15 +426,104 @@
 // };
 
 // export default HomePage;
+
 "use client";
 
 import React, { useState } from "react";
+import { useGetAutomationHubQuery, useGetWebsiteUpdatesQuery } from "@/state/api"; // Adjust path to match your structure
+
+// --- TYPES ---
+type UpdateType = {
+  version: string;
+  date: string;
+  changes: Record<string, string[]>;
+};
+
 import { 
   Clock, Layers, Cpu, Rocket, Code2, CalendarDays, 
-  User, Database, Server, Cloud, Globe, Activity, TrendingUp 
+  User, Database, Server, Cloud, Globe, Activity, TrendingUp, ChevronDown
 } from "lucide-react";
 
-// --- METRIC & DATA CONFIG ---
+// Lucide Icon Mapping Helper
+const iconMap: Record<string, React.ComponentType<any>> = {
+  "Docker": Layers,
+  "Terraform": Globe,
+  "Next.js": Code2,
+  "FastAPI": Rocket,
+  "Postgres": Database,
+  "AWS": Cloud,
+  "ALB": Activity,
+  "ECS": Server,
+  "Default": Cpu
+};
+
+// Complete static backup configs in case API fails on first load completely
+const BACKUP_DATA = {
+  primaryMetric: { 
+    title: "Current Potential Monthly Savings", 
+    value: "500h+", 
+    icon: Clock, 
+    color: "text-purple-600 dark:text-purple-400",
+    bg: "bg-purple-50 dark:bg-purple-500/10"
+  },
+  coreTech: [
+    { name: "Docker", icon: Layers, color: "text-blue-500" },
+    { name: "Terraform", icon: Globe, color: "text-purple-500" },
+    { name: "Next.js", icon: Code2, color: "text-slate-900 dark:text-white" },
+    { name: "FastAPI", icon: Rocket, color: "text-emerald-500" },
+    { name: "Postgres", icon: Database, color: "text-blue-600" },
+    { name: "AWS", icon: Cloud, color: "text-orange-500" },
+    { name: "ALB", icon: Activity, color: "text-rose-500" },
+    { name: "ECS", icon: Server, color: "text-orange-600" },
+  ],
+  activeProjects: [
+    { 
+      name: "GMO Dashboard", 
+      owner: "Bharath", 
+      tech: "", 
+      status: "Completed", 
+      eta: "May 15",
+      desc: "Interactive dashboard for gms project deadline sheet visualization." 
+    },
+    { 
+      name: "QC Audit", 
+      owner: "Bharath", 
+      tech: "", 
+      status: "Completed", 
+      eta: "May 20",
+      desc: "Interactive dashboard for qc audit and db visualization." 
+    },
+    { 
+      name: "Middle East Sport Specific Check", 
+      owner: "Priya", 
+      tech: "", 
+      status: "WIP", 
+      eta: "June 5",
+      desc: "Specific checks requested for middle east projects are being implemented" 
+    },
+    { 
+      name: "Rates and Ratings Calculation", 
+      owner: "Bharath", 
+      tech: "", 
+      status: "WIP", 
+      eta: "June 15",
+      desc: "Automates NNTV/NLTV viewership data retrieval and converts media rates (USD to EUR)." 
+    }
+  ],
+  deployments: [] // Left intentionally blank since the UI now maps everything via activeProjects
+};
+
+const FALLBACK_UPDATES_DATA = [
+  { version: "v1.2", date: "May 2026", category: "New Features", change: "Automation Hub" },
+  { version: "v1.2", date: "May 2026", category: "Improvements", change: "All athletics, motorsports, individual and non team sports are excluded for considering home and away teams in completeness check" },
+  { version: "v1.2", date: "May 2026", category: "Bug Fixes", change: "QC Audit processed trail failed issue resoved and able to process large files." },
+  { version: "v1.1", date: "April 2026", category: "Improvements", change: "Optimized large file processing speed by 40%" },
+  { version: "v1.1", date: "April 2026", category: "Bug Fixes", change: "Fixed timestamp offset in General QC results" },
+  { version: "v1.1", date: "April 2026", category: "Bug Fixes", change: "Resolved 500 error on BSR file upload with hidden spaces" },
+  { version: "v1.1", date: "April 2026", category: "New Features", change: "Added LaLiga QC Module" },
+  { version: "v1.0", date: "March 2026", category: "Improvements", change: "Initial framework release and AWS integration" }
+];
+
 const WHATS_NEW_DATA = [
   {
     version: "v1.1",
@@ -463,64 +552,133 @@ const WHATS_NEW_DATA = [
   }
 ];
 
-const primaryMetric = { 
-  title: "Current Potential Monthly Savings", 
-  value: "500h+", 
-  icon: Clock, 
-  color: "text-purple-600 dark:text-purple-400",
-  bg: "bg-purple-50 dark:bg-purple-500/10"
-};
-
-const coreTech = [
-  { name: "Docker", icon: Layers, color: "text-blue-500" },
-  { name: "Terraform", icon: Globe, color: "text-purple-500" },
-  { name: "Next.js", icon: Code2, color: "text-slate-900 dark:text-white" },
-  { name: "FastAPI", icon: Rocket, color: "text-emerald-500" },
-  { name: "Postgres", icon: Database, color: "text-blue-600" },
-  { name: "AWS", icon: Cloud, color: "text-orange-500" },
-  { name: "ALB", icon: Activity, color: "text-rose-500" },
-  { name: "ECS", icon: Server, color: "text-orange-600" },
-];
-
-const activeProjects = [
-  { 
-    name: "Rates and Ratings Calculation", 
-    owner: "Bharath", 
-    tech: "React, Python, AWS", 
-    status: "Testing", 
-    eta: "In Development",
-    desc: "Automates NNTV/NLTV viewership data retrieval and converts media rates (USD to EUR)." 
-  },
-  { 
-    name: "BSA - Early Warning Dashboard", 
-    owner: "Saurav", 
-    tech: "Python, Streamlit", 
-    status: "In Progress", 
-    eta: "Feb 16, 2026",
-    desc: "Interactive dashboard for early anomaly detection using graph visualization." 
-  },
-  { 
-    name: "F24 Italy Specific QC Checklist", 
-    owner: "Priya / Bharath", 
-    tech: "Python", 
-    status: "In Progress", 
-    eta: "Jan 28, 2026",
-    desc: "Custom validation rules and automation script tailored for the Italian F24 market." 
-  }
-];
-
-const deployments = [
-  { name: "YouTube Scraper Automation", owner: "Arthur", date: "Jan 27", desc: "Reduces manual URL extraction." },
-  { name: "Automation Website Framework", owner: "Bharath", date: "Jan 23", desc: "Infrastructure via React, FastAPI & AWS." },
-  { name: "Comparison - MoM/YoY", owner: "Saurav", date: "Jan 19", desc: "Looker Studio integration with Python." },
-  { name: "EPL Specific QC Checklist", owner: "Priya / Bharath", date: "Jan 2", desc: "Partial feedback received." },
-  { name: "F1 Specific QC Checklist", owner: "Bharath", date: "Dec 29", desc: "All functions working as expected." }
-];
-
 const HomePage = () => {
   const [openFeedback, setOpenFeedback] = useState(false);
   const [openUpdates, setOpenUpdates] = useState(false);
   const [openRequirement, setOpenRequirement] = useState(false);
+
+  const [expandedDeploys, setExpandedDeploys] = useState<Record<number, boolean>>({});
+
+  const toggleDeploy = (idx: number) => {
+    setExpandedDeploys((prev) => ({ ...prev, [idx]: !prev[idx] }));
+  };
+
+  // Connect to Redux Endpoint API
+  const { data: serverHubData, isLoading, isError } = useGetAutomationHubQuery();
+
+  // Safely extract the array whether it's the direct response or wrapped in a 'data' property
+  const hubArray = Array.isArray(serverHubData) ? serverHubData : ((serverHubData as any)?.data || []);
+
+  // 1. Compute Primary Metric
+  const metricItem = hubArray.find((item: any) => item.Type === "Metric");
+  const finalPrimaryMetric = {
+    title: metricItem?.Name || BACKUP_DATA.primaryMetric.title,
+    value: metricItem?.Icon_or_Color || BACKUP_DATA.primaryMetric.value,
+    icon: Clock,
+    color: BACKUP_DATA.primaryMetric.color,
+    bg: BACKUP_DATA.primaryMetric.bg
+  };
+
+  // 2. Compute Core Tech
+  const techItems = hubArray.filter((item: any) => item.Type === "Tech");
+  const finalCoreTech = techItems.length > 0
+    ? techItems.map((t: any) => ({
+        name: t.Name,
+        color: t.Icon_or_Color,
+        icon: iconMap[t.Name] || iconMap["Default"]
+      }))
+    : BACKUP_DATA.coreTech;
+
+  // 3. Compute Active Projects (Keep Upcoming, but filter Deployed to ONLY last month)
+  // 3. Compute Active Projects (Keep Upcoming, but filter Deployed to ONLY last month)
+  const upcomingItems = hubArray.filter((item: any) => {
+    // 1. Keep "Upcoming" items so you don't lose WIP tasks
+    if (item.Type === "Upcoming") return true;
+
+    // 2. For "Deployed" items, filter for exactly the previous calendar month
+    if (item.Type === "Deployed") {
+      let dateString = item.ETA_or_Date;
+      
+      // BUG FIX: If the date (e.g. "May 15") is missing a year, JS assumes year 2001.
+      // This regex checks if a 4-digit year exists. If not, it adds the current year.
+      if (!/\d{4}/.test(dateString)) {
+        dateString = `${dateString}, ${new Date().getFullYear()}`;
+      }
+
+      const itemDate = new Date(dateString);
+      
+      // If it's still not a valid parseable date, hide it
+      if (isNaN(itemDate.getTime())) return false;
+
+      const today = new Date();
+      
+      // Calculate what "last month" is, handling the Jan -> Dec year rollover
+      const lastMonth = today.getMonth() === 0 ? 11 : today.getMonth() - 1;
+      const targetYear = today.getMonth() === 0 ? today.getFullYear() - 1 : today.getFullYear();
+
+      // Return true ONLY if the item's month and year match last month
+      return itemDate.getMonth() === lastMonth && itemDate.getFullYear() === targetYear;
+    }
+
+    return false;
+  });
+
+  const finalActiveProjects = upcomingItems.length > 0
+    ? upcomingItems.map((p: any) => ({
+        name: p.Name,
+        owner: p.Owner,
+        tech: p.Tech,
+        status: p.Status,
+        eta: p.ETA_or_Date,
+        desc: p.Desc
+      }))
+    : BACKUP_DATA.activeProjects;
+
+  // 1. Hook invocation for website updates
+  const { data: updatesResponse, isLoading: isUpdatesLoading, error: updatesError } = useGetWebsiteUpdatesQuery();
+
+  // ✅ Use API data if valid, otherwise use the fallback array
+  const finalUpdatesList = (!updatesError && updatesResponse?.status === "success" && updatesResponse?.data?.length > 0)
+    ? updatesResponse.data
+    : FALLBACK_UPDATES_DATA;
+
+  // 2. Data transformation for What's New modal
+  const updatesData = React.useMemo(() => {
+    if (updatesError) {
+      console.error("❌ Updates API Error Details:", updatesError);
+      console.log("⚠️ Falling back to static updates data cache.");
+    }
+    
+    const grouped: Record<string, UpdateType> = {};
+    
+    finalUpdatesList.forEach((row: any) => {
+      const version = row.version; 
+      const date = row.date;
+      const category = row.category;
+      const change = row.change;
+      
+      if (!version || version.trim() === "") return;
+
+      if (!grouped[version]) {
+        grouped[version] = { 
+          version, 
+          date: date || "Unknown Date", 
+          changes: {} 
+        };
+      }
+
+      if (!grouped[version].changes[category]) {
+        grouped[version].changes[category] = [];
+      }
+
+      grouped[version].changes[category].push(change);
+    });
+
+    return Object.values(grouped).sort((a, b) =>
+      b.version.localeCompare(a.version, undefined, { numeric: true })
+    );
+  }, [finalUpdatesList, updatesError]); 
+
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] dark:bg-[#050505] text-slate-900 dark:text-slate-100 font-sans relative">
@@ -529,27 +687,37 @@ const HomePage = () => {
       <header className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0B0F1A]">
         <div className="max-w-[1600px] mx-auto flex items-center justify-between">
           <h1 className="text-lg font-extrabold tracking-tight">Automation Key Indicators</h1>
-          <span className="flex items-center gap-2 px-2 py-1 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 rounded-md text-[10px] font-bold uppercase tracking-widest">
-            <div className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse" /> Nominal
+          <span className={`flex items-center gap-2 px-2 py-1 border rounded-md text-[10px] font-bold uppercase tracking-widest ${
+            isError 
+              ? "bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20"
+              : "bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20"
+          }`}>
+            <div className={`w-1 h-1 rounded-full ${isError ? "bg-amber-500" : "bg-emerald-500 animate-pulse"}`} /> 
+            {isError ? "Offline Cache Mode" : "Nominal"}
           </span>
         </div>
       </header>
 
       <main className="max-w-[1600px] mx-auto p-6 space-y-6">
+        {isLoading && (
+          <div className="text-xs text-slate-400 dark:text-slate-500 animate-pulse">
+            Fetching latest layout updates from Google Sheets...
+          </div>
+        )}
         
         {/* TOP SECTION */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
           <div className="lg:col-span-4 xl:col-span-3">
             <div className="bg-white dark:bg-[#0F131F] border border-slate-200 dark:border-slate-800 p-4 rounded-xl shadow-sm h-full flex flex-col justify-center">
               <div className="flex items-center gap-3">
-                <div className={`p-2 rounded-lg shrink-0 ${primaryMetric.bg} ${primaryMetric.color}`}>
-                  <primaryMetric.icon size={20} />
+                <div className={`p-2 rounded-lg shrink-0 ${finalPrimaryMetric.bg} ${finalPrimaryMetric.color}`}>
+                  <finalPrimaryMetric.icon size={20} />
                 </div>
                 <div className="min-w-0">
                   <h3 className="text-[9px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-wider leading-tight mb-1">
-                    {primaryMetric.title}
+                    {finalPrimaryMetric.title}
                   </h3>
-                  <p className="text-2xl font-bold tabular-nums leading-none">{primaryMetric.value}</p>
+                  <p className="text-2xl font-bold tabular-nums leading-none">{finalPrimaryMetric.value}</p>
                 </div>
               </div>
             </div>
@@ -557,7 +725,7 @@ const HomePage = () => {
 
           <div className="lg:col-span-8 xl:col-span-9 bg-white dark:bg-[#0F131F] border border-slate-200 dark:border-slate-800 p-4 rounded-xl shadow-sm">
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
-              {coreTech.map((tech, i) => (
+              {finalCoreTech.map((tech: any, i: number) => (
                 <div key={i} className="flex flex-col items-center justify-center gap-1.5 p-2 rounded-lg bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-700/50 hover:border-indigo-500/30 transition-colors">
                   <tech.icon size={16} className={tech.color} />
                   <span className="text-[10px] font-bold truncate w-full text-center">{tech.name}</span>
@@ -569,17 +737,23 @@ const HomePage = () => {
 
         {/* MAIN CONTENT */}
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+          
+          {/* UPCOMING & DEPLOYED AUTOMATIONS */}
           <div className="xl:col-span-8 space-y-4">
             <div className="flex items-center gap-2 px-1">
               <Code2 className="text-blue-500" size={18} />
-              <h2 className="text-md font-bold text-slate-700 dark:text-slate-200">Upcoming Automations</h2>
+              <h2 className="text-md font-bold text-slate-700 dark:text-slate-200">Active & Recently Deployed</h2>
             </div>
             <div className="grid grid-cols-1 gap-3">
-              {activeProjects.map((project, idx) => (
+              {finalActiveProjects.map((project: any, idx: number) => (
                 <div key={idx} className="bg-white dark:bg-[#0F131F] border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm hover:border-blue-400/50 transition-all">
                   <div className="flex justify-between items-start mb-2">
                     <h3 className="text-sm font-bold">{project.name}</h3>
-                    <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-500 border border-blue-500/20 uppercase tracking-tighter">
+                    <span className={`text-[9px] font-black px-1.5 py-0.5 rounded border uppercase tracking-tighter ${
+                      project.status.toLowerCase() === "completed" 
+                        ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20"
+                        : "bg-blue-500/10 text-blue-500 border-blue-500/20"
+                    }`}>
                       {project.status}
                     </span>
                   </div>
@@ -587,7 +761,7 @@ const HomePage = () => {
                   <div className="flex items-center justify-between text-[10px] font-bold text-slate-400 border-t border-slate-100 dark:border-slate-800 pt-3">
                     <div className="flex gap-4">
                       <span className="flex items-center gap-1"><User size={12} /> {project.owner}</span>
-                      <span className="flex items-center gap-1"><Database size={12} /> {project.tech}</span>
+                      {project.tech && <span className="flex items-center gap-1"><Database size={12} /> {project.tech}</span>}
                     </div>
                     <span className="flex items-center gap-1 text-slate-600 dark:text-slate-300">
                       <CalendarDays size={12} /> {project.eta}
@@ -598,47 +772,84 @@ const HomePage = () => {
             </div>
           </div>
 
+          {/* RECENT UPDATES SIDEBAR */}
           <div className="xl:col-span-4 space-y-4">
             <div className="flex items-center gap-2 px-1">
               <Rocket className="text-emerald-500" size={18} />
-              <h2 className="text-md font-bold text-slate-700 dark:text-slate-200">Recent Deployments</h2>
+              <h2 className="text-md font-bold text-slate-700 dark:text-slate-200">Recent Updates</h2>
             </div>
-            <div className="bg-white dark:bg-[#0F131F] border border-slate-200 dark:border-slate-800 rounded-xl shadow-sm p-4">
-              <div className="space-y-5">
-                {deployments.map((dep, idx) => (
-                  <div key={idx} className="flex gap-3 group">
-                    <div className="flex flex-col items-center shrink-0">
-                      <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                      {idx !== deployments.length - 1 && <div className="w-[1px] h-full bg-slate-100 dark:bg-slate-800 mt-2" />}
-                    </div>
-                    <div className="min-w-0 pb-1">
-                      <div className="flex justify-between items-center mb-0.5">
-                        <h4 className="text-xs font-bold truncate pr-2">{dep.name}</h4>
-                        <span className="text-[9px] font-bold text-slate-400 shrink-0">{dep.date}</span>
-                      </div>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-1">{dep.desc}</p>
-                    </div>
+            
+            <div className="bg-white dark:bg-[#0F131F] border border-slate-200 dark:border-slate-800 rounded-xl shadow-sm p-3">
+              <div className="space-y-1">
+                {isUpdatesLoading ? (
+                  <div className="text-xs text-slate-400 dark:text-slate-500 animate-pulse text-center py-4">
+                    Loading recent deployments...
                   </div>
-                ))}
+                ) : (
+                  finalUpdatesList.slice(0, 5).map((dep: any, idx: number) => {
+                    const isLast = idx === Math.min(finalUpdatesList.length, 5) - 1;
+                    const isExpanded = expandedDeploys[idx];
+                    
+                    return (
+                      <div 
+                        key={idx} 
+                        onClick={() => toggleDeploy(idx)}
+                        className="flex gap-3 group cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/40 p-2 rounded-lg transition-colors"
+                      >
+                        <div className="flex flex-col items-center shrink-0 pt-1.5">
+                          <div className={`w-1.5 h-1.5 rounded-full transition-colors duration-300 ${isExpanded ? "bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.6)]" : "bg-emerald-500"}`} />
+                          {!isLast && <div className="w-[1px] h-full bg-slate-100 dark:bg-slate-800 mt-2" />}
+                        </div>
+                        
+                        <div className="min-w-0 pb-1 w-full">
+                          <div className="flex justify-between items-start mb-1 gap-2">
+                            <h4 className="text-xs font-bold truncate">
+                              <span className="text-indigo-600 dark:text-indigo-400">{dep.version}</span>
+                              <span className="text-slate-400 mx-1.5">•</span>
+                              {dep.category}
+                            </h4>
+                            <div className="flex items-center gap-1.5 shrink-0 text-slate-400">
+                              <span className="text-[9px] font-bold mt-0.5">
+                                {dep.date}
+                              </span>
+                              <ChevronDown 
+                                size={14} 
+                                className={`transition-transform duration-300 ${isExpanded ? "rotate-180 text-indigo-500" : "group-hover:text-slate-600 dark:group-hover:text-slate-300"}`} 
+                              />
+                            </div>
+                          </div>
+                          
+                          <div 
+                            className={`text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed transition-all duration-300 ease-in-out overflow-hidden ${
+                              isExpanded 
+                                ? "max-h-[500px] opacity-100" 
+                                : "max-h-[2.75rem] opacity-80 line-clamp-2"
+                            }`}
+                          >
+                            {dep.change}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </div>
           </div>
+
         </div>
       </main>
 
       {/* --- FLOATING ACTION BUTTONS --- */}
       <div className="fixed bottom-6 right-6 flex flex-col items-end gap-3 z-50">
-        
-        {/* NEW UPDATES BUTTON */}
         <button
           onClick={() => setOpenUpdates(true)}
-          className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white px-4 py-2 rounded-lg shadow-lg hover:scale-105 transition font-bold text-sm"
+          className="fixed bottom-20 right-6 bg-gradient-to-r from-indigo-600 to-purple-600 text-white px-4 py-2 rounded-lg shadow-lg hover:scale-105 transition z-50"
         >
           🚀 New Updates
         </button>
 
         <div className="flex gap-3">
-          {/* NEW BUSINESS REQUIREMENT BUTTON */}
           <button
             onClick={() => setOpenRequirement(true)}
             className="bg-blue-600 text-white px-4 py-2 rounded-lg shadow-lg hover:bg-blue-700 transition-colors text-sm font-medium"
@@ -646,7 +857,6 @@ const HomePage = () => {
             New Business Requirement
           </button>
 
-          {/* FEEDBACK BUTTON */}
           <button
             onClick={() => setOpenFeedback(true)}
             className="bg-blue-800 text-white px-4 py-2 rounded-lg shadow-lg hover:bg-blue-900 transition-colors text-sm font-medium"
@@ -719,19 +929,26 @@ const HomePage = () => {
               </button>
             </div>
             <div className="p-6 overflow-y-auto space-y-6">
-              {(() => {
-                const latest = WHATS_NEW_DATA[0];
-                return (
+              {isUpdatesLoading ? (
+                <div className="text-center py-10">Loading updates...</div>
+              ) : updatesError ? (
+                <div className="text-center py-10 text-red-500 font-semibold">
+                  ❌ Connection failed. Verify your server or network routes in api.ts.
+                </div>
+              ) : updatesData.length > 0 ? (
+                <>
+                  {/* ✅ LATEST VERSION */}
                   <div>
                     <div className="mb-4 px-4 py-2 rounded-lg bg-gradient-to-r from-indigo-600 to-purple-600 text-white text-sm font-semibold">
-                      🚀 Latest: {latest.version} – {latest.date}
+                      🚀 Latest: {updatesData[0].version} – {updatesData[0].date}
                     </div>
+
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      {Object.entries(latest.changes).map(([key, items], i) => (
+                      {Object.entries(updatesData[0].changes).map(([key, items], i) => (
                         <div key={i} className="bg-slate-50 dark:bg-slate-800/40 p-4 rounded-lg border border-slate-200 dark:border-slate-700">
                           <h3 className="text-xs font-bold mb-2 text-indigo-500">{key}</h3>
                           <ul className="text-xs space-y-1">
-                            {(items as string[]).map((item, idx) => (
+                            {items.map((item, idx) => (
                               <li key={idx}>• {item}</li>
                             ))}
                           </ul>
@@ -739,28 +956,33 @@ const HomePage = () => {
                       ))}
                     </div>
                   </div>
-                );
-              })()}
-              <div>
-                <h3 className="text-sm font-bold mb-3">Previous Versions</h3>
-                {WHATS_NEW_DATA.slice(1).map((v, i) => (
-                  <div key={i} className="p-3 mb-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/30">
-                    <h4 className="text-xs font-bold mb-1">
-                      {v.version} – {v.date}
-                    </h4>
-                    {Object.entries(v.changes).map(([key, items], idx) => (
-                      <div key={idx} className="text-xs">
-                        <span className="font-semibold">{key}: </span>
-                        {(items as string[]).join(", ")}
-                      </div>
-                    ))}
-                  </div>
-                ))}
-              </div>
+
+                  {/* ✅ PREVIOUS VERSIONS */}
+                  {updatesData.length > 1 && (
+                    <div className="mt-10">
+                      <h3 className="text-sm font-bold mb-3">Previous Versions</h3>
+                      {updatesData.slice(1).map((v, i) => (
+                        <div key={i} className="p-3 mb-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/30">
+                          <h4 className="text-xs font-bold mb-1">{v.version} – {v.date}</h4>
+                          {Object.entries(v.changes).map(([key, items], idx) => (
+                            <div key={idx} className="text-xs text-slate-600 dark:text-slate-400">
+                              <span className="font-semibold">{key}: </span>{items.join(", ")}
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="text-center py-10 text-slate-500">No updates found.</div>
+              )}
             </div>
+
           </div>
         </div>
       )}
+
     </div>
   );
 };

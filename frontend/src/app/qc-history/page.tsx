@@ -5,7 +5,8 @@ import {
   Search, Filter, Clock, AlertCircle, CheckCircle2, User, FolderGit2, Hash,
   Activity, CalendarDays, ChevronRight, ShieldCheck, X, BarChart3, MapPin, FileText,
   TrendingDown, TrendingUp, Users, Sparkles, Zap, Layers, Target, Info,
-  LineChart as LineChartIcon, Download, Calendar, ArrowRight, Truck, HelpCircle
+  LineChart as LineChartIcon, Download, Calendar, ArrowRight, Truck, HelpCircle,
+  CalendarRange, Table, Database
 } from "lucide-react";
 import { useGetQcHistoryQuery, useGetDeliveryDashboardQuery, useLazyDownloadWeeklyQcReportQuery } from "@/state/api"; 
 import { 
@@ -26,7 +27,39 @@ const formatLargeNumber = (num: number) => {
   return num.toString();
 };
 
+const getWeekRange = (offset = 0) => {
+  const now = new Date();
+  now.setHours(0, 0, 0, 0); 
+  const dayOfWeek = now.getDay();
+  const diffToMonday = now.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
+  
+  const startOfWeek = new Date(now.setDate(diffToMonday));
+  startOfWeek.setDate(startOfWeek.getDate() + (offset * 7)); 
+  startOfWeek.setHours(0, 0, 0, 0);
+  
+  const endOfWeek = new Date(startOfWeek);
+  endOfWeek.setDate(startOfWeek.getDate() + 6);
+  endOfWeek.setHours(23, 59, 59, 999);
+  
+  return { startOfWeek, endOfWeek };
+};
+
 const CHART_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#14b8a6', '#f97316', '#6366f1', '#ec4899', '#06b6d4'];
+
+const getValidSummary = (rawSummary: any) => {
+  if (!rawSummary) return {};
+  if (typeof rawSummary === 'object' && !Array.isArray(rawSummary)) return rawSummary;
+  if (typeof rawSummary === 'string') {
+    try {
+      let parsed = JSON.parse(rawSummary);
+      if (typeof parsed === 'string') parsed = JSON.parse(parsed); 
+      return typeof parsed === 'object' && parsed !== null ? parsed : {};
+    } catch (e) {
+      return {};
+    }
+  }
+  return {};
+};
 
 // --- CUSTOM TOOLTIP COMPONENT ---
 const InfoTooltip = ({ text, position = "top", align = "center" }: { text: string, position?: "top" | "bottom", align?: "center" | "left" | "right" }) => {
@@ -50,19 +83,23 @@ const QcHistoryDashboard = () => {
   const { data: historyData = [], isLoading: historyLoading, isError: historyError } = useGetQcHistoryQuery();
   const { data: deliveryData = [], isLoading: deliveryLoading } = useGetDeliveryDashboardQuery();
 
-  const [searchTerm, setSearchTerm] = useState("");
+  const [searchRosco, setSearchRosco] = useState("");
+  const [searchDelivery, setSearchDelivery] = useState("");
+  const [searchUser, setSearchUser] = useState("");
+  
   const [filterStatus, setFilterStatus] = useState<"all" | "clean" | "error">("all");
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState<any | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   
-  const [exportStartDate, setExportStartDate] = useState("");
-  const [exportEndDate, setExportEndDate] = useState("");
-  
-  const [deliveryFilterStart, setDeliveryFilterStart] = useState("");
-  const [deliveryFilterEnd, setDeliveryFilterEnd] = useState("");
+  const [globalStartDate, setGlobalStartDate] = useState("");
+  const [globalEndDate, setGlobalEndDate] = useState("");
 
   const [activeChartLines, setActiveChartLines] = useState<Record<string, string[]>>({});
+  const [weekOffset, setWeekOffset] = useState(0);
+
+  // 🎯 Failsafe Data Source Toggle State
+  const [dataSource, setDataSource] = useState<"merged" | "db">("merged");
 
   const toggleGroup = (groupId: string) => {
     setExpandedGroups(prev => ({ ...prev, [groupId]: !prev[groupId] }));
@@ -83,24 +120,119 @@ const QcHistoryDashboard = () => {
     const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
     let url = `${baseUrl}/qc/history/weekly-export`;
     const params = new URLSearchParams();
-    if (exportStartDate) params.append("start_date", exportStartDate);
-    if (exportEndDate) params.append("end_date", exportEndDate);
+    if (globalStartDate) params.append("start_date", globalStartDate);
+    if (globalEndDate) params.append("end_date", globalEndDate);
     if (params.toString()) url += `?${params.toString()}`;
     window.open(url, "_blank");
   };
 
   // --- DYNAMIC DATA & SMART ANALYTICS ENGINE ---
   const { 
-    filteredData, kpis, chartData, globalRuleStats, 
-    deliveryRiskData, pipelineTableData
-  } = useMemo(() => {
+    kpis, chartData, globalRuleStats, 
+    deliveryRiskData, actionCenterDeliveries
+  } = useMemo(() : any => {
     
-    const unlockedHistory = historyData.map((row: any) => ({ ...row }));
+    const rawHistory = historyData.map((row: any) => ({ ...row }));
+    
+    const unfilteredLatestRuns: Record<string, any> = {};
+    const unfilteredRunCounts: Record<string, number> = {};
+    const unfilteredGroupsMap: Record<string, any> = {}; 
+
+    const rawGroupMap: Record<string, any[]> = {};
+    rawHistory.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()).forEach((row: any) => {
+      const rid = row.manual_rosco_id || row.rosco_id || "Unknown_ID";
+      if (!rawGroupMap[rid]) rawGroupMap[rid] = [];
+      rawGroupMap[rid].push(row);
+    });
+
+    Object.values(rawGroupMap).forEach((runs) => {
+      const firstRun = runs[0];
+      const latestRun = runs[runs.length - 1];
+      const destId = latestRun.destination_id;
+      
+      let evals = 0, fails = 0, maxRows = 0;
+      if (latestRun.qc_summary) {
+        Object.values(latestRun.qc_summary).forEach((s: any) => {
+          evals += s.Total_Evaluated || 0;
+          fails += s.Failed || 0;
+          if (s.Total_Evaluated > maxRows) maxRows = s.Total_Evaluated;
+        });
+      }
+      let errRate = evals > 0 ? (fails / evals) * 100 : 0;
+      if (evals === 0 && latestRun.error_count > 0) errRate = 100;
+      latestRun._computedErrorRate = errRate;
+
+      // 🎯 STAT OBJ WITH QC TYPE
+      const statObj = {
+        isClean: latestRun.error_count === 0,
+        errorCount: latestRun.error_count,
+        errorRate: errRate,
+        user_name: latestRun.user_name,
+        qc_type: latestRun.qc_type || "Gen.QC" // Default fallback
+      };
+
+      const allFailedRules = new Set<string>();
+      runs.forEach((run: any, index: number) => {
+        run.stepFixed = []; run.stepBroken = []; run.errorDelta = 0;
+        if (run.qc_summary) {
+          Object.entries(run.qc_summary).forEach(([rule, stats]: any) => {
+            if (stats.Failed > 0) allFailedRules.add(formatCheckName(rule));
+          });
+        }
+        if (index > 0) {
+          const prevRun = runs[index - 1];
+          run.errorDelta = (run.error_count || 0) - (prevRun.error_count || 0);
+          if (prevRun.qc_summary && run.qc_summary) {
+            Object.entries(prevRun.qc_summary).forEach(([rule, stats]: any) => {
+              if (stats.Failed > 0 && (!run.qc_summary[rule] || run.qc_summary[rule].Failed === 0)) run.stepFixed.push(formatCheckName(rule));
+            });
+            Object.entries(run.qc_summary).forEach(([rule, stats]: any) => {
+              if (stats.Failed > 0 && (!prevRun.qc_summary[rule] || prevRun.qc_summary[rule].Failed === 0)) run.stepBroken.push(formatCheckName(rule));
+            });
+          }
+        }
+      });
+
+      const overallFixed: string[] = []; const overallBroken: string[] = []; 
+      if (runs.length > 1 && firstRun.qc_summary && latestRun.qc_summary) {
+        Object.entries(firstRun.qc_summary).forEach(([rule, stats]: any) => {
+          if (stats.Failed > 0 && latestRun.qc_summary[rule]?.Failed === 0) overallFixed.push(formatCheckName(rule));
+        });
+        Object.entries(latestRun.qc_summary).forEach(([rule, stats]: any) => {
+          if (stats.Failed > 0 && (!firstRun.qc_summary[rule] || firstRun.qc_summary[rule].Failed === 0)) overallBroken.push(formatCheckName(rule));
+        });
+      }
+
+      const fullGroupData = {
+        id: firstRun.manual_rosco_id || firstRun.rosco_id || "Unknown",
+        project_name: latestRun.project_name,
+        destination_id: latestRun.destination_id,
+        user_name: latestRun.user_name,
+        latestRun, allRuns: runs, totalRuns: runs.length,
+        overallFixed, overallBroken, allFailedRules: Array.from(allFailedRules)
+      };
+
+      if (destId) {
+        unfilteredLatestRuns[`dest_${destId}`] = statObj;
+        unfilteredRunCounts[`dest_${destId}`] = runs.length;
+        unfilteredGroupsMap[`dest_${destId}`] = fullGroupData;
+      }
+    });
+
+    const unlockedHistory = rawHistory.filter((row: any) => {
+      if (!row.created_at) return false;
+      const runDate = new Date(row.created_at).getTime();
+      if (globalStartDate && globalEndDate) {
+        const start = new Date(globalStartDate).getTime();
+        const end = new Date(globalEndDate).getTime() + 86400000;
+        return runDate >= start && runDate <= end;
+      } else if (globalStartDate) return runDate >= new Date(globalStartDate).getTime();
+      else if (globalEndDate) return runDate <= new Date(globalEndDate).getTime() + 86400000;
+      return true;
+    });
 
     const totalRuns = unlockedHistory.length;
-    let globalEvals = 0;
-    let globalFails = 0;
-    let totalDuration = 0;
+    let globalEvals = 0; let globalFails = 0; let totalDuration = 0;
 
     const projectErrorRateMap: Record<string, { evals: number, fails: number }> = {};
     const ruleStats: Record<string, { evals: number, fails: number }> = {};
@@ -117,9 +249,7 @@ const QcHistoryDashboard = () => {
       if (!trendMap[date]) trendMap[date] = { date, runs: 0, totalEvals: 0, totalFails: 0 };
       trendMap[date].runs += 1;
 
-      let fileMaxRows = 0;
-      let fileTotalEvals = 0;
-      let fileTotalFails = 0;
+      let fileMaxRows = 0; let fileTotalEvals = 0; let fileTotalFails = 0;
 
       if (row.qc_summary) {
         Object.entries(row.qc_summary).forEach(([ruleKey, stats]: [string, any]) => {
@@ -127,10 +257,7 @@ const QcHistoryDashboard = () => {
           const evals = stats.Total_Evaluated || 0;
           const fails = stats.Failed || 0;
 
-          globalEvals += evals;
-          globalFails += fails;
-          fileTotalEvals += evals;
-          fileTotalFails += fails;
+          globalEvals += evals; globalFails += fails; fileTotalEvals += evals; fileTotalFails += fails;
           if (evals > fileMaxRows) fileMaxRows = evals;
 
           if (row.project_name) {
@@ -138,26 +265,20 @@ const QcHistoryDashboard = () => {
             projectErrorRateMap[row.project_name].evals += evals;
             projectErrorRateMap[row.project_name].fails += fails;
           }
-
           if (!ruleStats[cleanName]) ruleStats[cleanName] = { evals: 0, fails: 0 };
-          ruleStats[cleanName].evals += evals;
-          ruleStats[cleanName].fails += fails;
+          ruleStats[cleanName].evals += evals; ruleStats[cleanName].fails += fails;
         });
       }
 
-      trendMap[date].totalEvals += fileTotalEvals;
-      trendMap[date].totalFails += fileTotalFails;
-
+      trendMap[date].totalEvals += fileTotalEvals; trendMap[date].totalFails += fileTotalFails;
       row._computedErrorRate = fileTotalEvals > 0 ? (fileTotalFails / fileTotalEvals) * 100 : 0;
       row._computedSpeed = fileMaxRows > 0 && row.run_duration > 0 ? fileMaxRows / row.run_duration : 0;
       row._computedLineItems = fileMaxRows; 
     });
 
     const avgDuration = totalRuns > 0 ? totalDuration / totalRuns : 0;
-    const globalErrorRate = globalEvals > 0 ? (globalFails / globalEvals) * 100 : 0;
 
     const densityBuckets = { "Clean (0%)": 0, "Low (1-10%)": 0, "Medium (11-25%)": 0, "High (>25%)": 0 };
-
     unlockedHistory.forEach((row: any) => {
       const isSlow = row.run_duration > avgDuration * 2 && row.run_duration > 15;
       const isBuggy = (row._computedErrorRate || 0) > 25; 
@@ -178,228 +299,179 @@ const QcHistoryDashboard = () => {
     ];
 
     const trendTimeline = Object.values(trendMap).map(t => ({
-      ...t,
-      errorRate: t.totalEvals > 0 ? Number(((t.totalFails / t.totalEvals) * 100).toFixed(1)) : 0
+      ...t, errorRate: t.totalEvals > 0 ? Number(((t.totalFails / t.totalEvals) * 100).toFixed(1)) : 0
     })).reverse();
 
     const projectErrors = Object.keys(projectErrorRateMap)
       .map(name => ({
-        fullName: name,
-        shortName: truncateText(name, 16),
-        errorRate: projectErrorRateMap[name].evals > 0 
-          ? Number(((projectErrorRateMap[name].fails / projectErrorRateMap[name].evals) * 100).toFixed(1)) 
-          : 0
+        fullName: name, shortName: truncateText(name, 16),
+        errorRate: projectErrorRateMap[name].evals > 0 ? Number(((projectErrorRateMap[name].fails / projectErrorRateMap[name].evals) * 100).toFixed(1)) : 0
       }))
-      .filter(p => p.errorRate > 0)
-      .sort((a, b) => b.errorRate - a.errorRate)
-      .slice(0, 5);
+      .filter(p => p.errorRate > 0).sort((a, b) => b.errorRate - a.errorRate).slice(0, 5);
 
     const topFailedRules = Object.keys(ruleStats)
       .map(name => ({
-        fullName: name,
-        shortName: truncateText(name, 16),
+        fullName: name, shortName: truncateText(name, 16),
         failRate: ruleStats[name].evals > 0 ? Number(((ruleStats[name].fails / ruleStats[name].evals) * 100).toFixed(1)) : 0
       }))
-      .filter(r => r.failRate > 0)
-      .sort((a, b) => b.failRate - a.failRate)
-      .slice(0, 5);
+      .filter(r => r.failRate > 0).sort((a, b) => b.failRate - a.failRate).slice(0, 5);
 
     const topUsers = Object.keys(userMap)
       .map(u => ({ fullName: u, shortName: truncateText(u, 14), runs: userMap[u] }))
       .sort((a, b) => b.runs - a.runs).slice(0, 5);
 
     const scatterData = unlockedHistory.map((row: any) => ({
-      name: row.project_name || "Unknown",
-      id: row.manual_rosco_id || row.rosco_id,
-      duration: Number((row.run_duration || 0).toFixed(1)),
-      errorRate: Number((row._computedErrorRate || 0).toFixed(1)),
+      name: row.project_name || "Unknown", id: row.manual_rosco_id || row.rosco_id,
+      duration: Number((row.run_duration || 0).toFixed(1)), errorRate: Number((row._computedErrorRate || 0).toFixed(1)),
       lineItems: row._computedLineItems || 0,
       isAnomaly: (row.run_duration > avgDuration * 2 && row.run_duration > 15) || ((row._computedErrorRate || 0) > 25)
     }));
 
-    // --- GROUP DATABASE HISTORY BY ROSCO ID ---
-    const groupedMap: Record<string, any[]> = {};
-    unlockedHistory.forEach((row: any) => {
-      const rid = row.manual_rosco_id || row.rosco_id || "Unknown_ID";
-      if (!groupedMap[rid]) groupedMap[rid] = [];
-      groupedMap[rid].push(row);
-    });
+    // 🎯 DELIVERY PIPELINE & ACTION CENTER MAPPER
+    let pipelineList: any[] = [];
+    const { startOfWeek, endOfWeek } = getWeekRange(weekOffset); 
 
-    const historyStatusMap: Record<string, any> = {};
+    // 🛑 FAILSAFE: DB ONLY GENERATION
+    if (dataSource === "db") {
+      Object.values(unfilteredGroupsMap).forEach(group => {
+        const runDate = new Date(group.latestRun.created_at);
+        const runTime = runDate.getTime();
+        
+        let includeRecord = true;
+        if (globalStartDate && globalEndDate) {
+          const start = new Date(globalStartDate).getTime();
+          const end = new Date(globalEndDate).getTime() + 86400000;
+          if (runTime < start || runTime > end) includeRecord = false;
+        } else if (globalStartDate) {
+          if (runTime < new Date(globalStartDate).getTime()) includeRecord = false;
+        } else if (globalEndDate) {
+          if (runTime > new Date(globalEndDate).getTime() + 86400000) includeRecord = false;
+        }
 
-    let processedGroups = Object.values(groupedMap).map((runs) => {
-      runs.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-      const firstRun = runs[0];
-      const latestRun = runs[runs.length - 1];
-      const groupId = firstRun.manual_rosco_id || firstRun.rosco_id || "Unknown";
-      
-      let fileTotalEvals = 0;
-      let fileTotalFails = 0;
-      let maxRows = 0;
-      
-      if (latestRun.qc_summary) {
-        Object.values(latestRun.qc_summary).forEach((stats: any) => {
-          fileTotalEvals += stats.Total_Evaluated || 0;
-          fileTotalFails += stats.Failed || 0;
-          if (stats.Total_Evaluated > maxRows) maxRows = stats.Total_Evaluated;
-        });
-      }
-      latestRun._computedErrorRate = fileTotalEvals > 0 ? (fileTotalFails / fileTotalEvals) * 100 : 0;
-      latestRun._computedSpeed = maxRows > 0 && latestRun.run_duration > 0 ? maxRows / latestRun.run_duration : 0;
-
-      // Track this for the Delivery Pipeline cross-reference
-      historyStatusMap[groupId] = {
-        hasRun: true,
-        isClean: latestRun.error_count === 0,
-        errorCount: latestRun.error_count,
-        totalRuns: runs.length,
-        errorRate: latestRun._computedErrorRate
-      };
-
-      const allFailedRules = new Set<string>();
-
-      runs.forEach((run: any, index: number) => {
-        run.stepFixed = [];
-        run.stepBroken = [];
-        run.errorDelta = 0;
-        if (run.qc_summary) {
-          Object.entries(run.qc_summary).forEach(([rule, stats]: any) => {
-            if (stats.Failed > 0) allFailedRules.add(formatCheckName(rule));
+        if (includeRecord) {
+          pipelineList.push({
+            original_delivery_date: runDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-'),
+            _rawDateMs: runTime,
+            delivery_uid: group.destination_id,
+            tracking_id: group.id,
+            client_account: group.project_name,
+            user_name: group.user_name,
+            qc_type: group.latestRun.qc_type || "General QC", // 🎯 Map DB Type
+            qc_status: group.latestRun.error_count === 0 ? "Clean" : "Failing",
+            total_qc_runs: group.totalRuns,
+            final_error_rate: group.latestRun._computedErrorRate,
+            error_count: group.latestRun.error_count,
+            groupData: group
           });
         }
-        if (index > 0) {
-          const prevRun = runs[index - 1];
-          run.errorDelta = (run.error_count || 0) - (prevRun.error_count || 0);
+      });
+      pipelineList.sort((a, b) => a._rawDateMs - b._rawDateMs);
 
-          if (prevRun.qc_summary && run.qc_summary) {
-            Object.entries(prevRun.qc_summary).forEach(([rule, stats]: any) => {
-              if (stats.Failed > 0 && (!run.qc_summary[rule] || run.qc_summary[rule].Failed === 0)) run.stepFixed.push(formatCheckName(rule));
-            });
-            Object.entries(run.qc_summary).forEach(([rule, stats]: any) => {
-              if (stats.Failed > 0 && (!prevRun.qc_summary[rule] || prevRun.qc_summary[rule].Failed === 0)) run.stepBroken.push(formatCheckName(rule));
-            });
-          }
+    } else {
+      // 🟢 PRIMARY: GOOGLE SHEETS MERGED GENERATION
+      deliveryData.forEach((d: any) => {
+        if (!d.original_delivery_date) return;
+        
+        const deliveryDate = new Date(d.original_delivery_date).getTime();
+        let includeRecord = true;
+        if (globalStartDate && globalEndDate) {
+          const start = new Date(globalStartDate).getTime();
+          const end = new Date(globalEndDate).getTime() + 86400000;
+          if (deliveryDate < start || deliveryDate > end) includeRecord = false;
+        } else if (globalStartDate) {
+          if (deliveryDate < new Date(globalStartDate).getTime()) includeRecord = false;
+        } else if (globalEndDate) {
+          if (deliveryDate > new Date(globalEndDate).getTime() + 86400000) includeRecord = false;
         }
-      });
 
-      const overallFixed: string[] = []; 
-      const overallBroken: string[] = []; 
-      if (runs.length > 1 && firstRun.qc_summary && latestRun.qc_summary) {
-        Object.entries(firstRun.qc_summary).forEach(([rule, stats]: any) => {
-          if (stats.Failed > 0 && latestRun.qc_summary[rule]?.Failed === 0) overallFixed.push(formatCheckName(rule));
+        if (!includeRecord) return;
+
+        let hStats = null;
+        let groupData = null;
+        if (d.delivery_uid && unfilteredLatestRuns[`dest_${d.delivery_uid}`]) {
+            hStats = { ...unfilteredLatestRuns[`dest_${d.delivery_uid}`], totalRuns: unfilteredRunCounts[`dest_${d.delivery_uid}`] };
+            groupData = unfilteredGroupsMap[`dest_${d.delivery_uid}`];
+        }
+
+        const status = hStats ? (hStats.isClean ? "Clean" : "Failing") : "Not Run";
+
+        pipelineList.push({
+          ...d,
+          qc_status: status,
+          total_qc_runs: hStats ? hStats.totalRuns : 0,
+          final_error_rate: hStats ? hStats.errorRate : null,
+          error_count: hStats ? hStats.errorCount : null,
+          user_name: hStats ? hStats.user_name : "Pending",
+          qc_type: hStats ? hStats.qc_type : "N/A", // 🎯 Map DB Type to Sheet row
+          groupData
         });
-        Object.entries(latestRun.qc_summary).forEach(([rule, stats]: any) => {
-          if (stats.Failed > 0 && (!firstRun.qc_summary[rule] || firstRun.qc_summary[rule].Failed === 0)) overallBroken.push(formatCheckName(rule));
-        });
-      }
-
-      return {
-        id: groupId,
-        project_name: latestRun.project_name,
-        destination_id: latestRun.destination_id,
-        user_name: latestRun.user_name,
-        latestRun,
-        allRuns: runs, 
-        totalRuns: runs.length,
-        overallFixed,
-        overallBroken,
-        allFailedRules: Array.from(allFailedRules),
-        deliveryInfo: null as any // 🎯 FIX: Declare the property upfront so TS doesn't complain
-      };
-    });
-
-    // --- 🎯 NEW: DELIVERY READINESS PIPELINE LOGIC ---
-    let pipelineList: any[] = [];
-
-    deliveryData.forEach((d: any) => {
-      if (!d.original_delivery_date) return;
-      
-      const deliveryDate = new Date(d.original_delivery_date).getTime();
-      let includeRecord = true;
-      if (deliveryFilterStart && deliveryFilterEnd) {
-        const start = new Date(deliveryFilterStart).getTime();
-        const end = new Date(deliveryFilterEnd).getTime() + 86400000;
-        if (deliveryDate < start || deliveryDate > end) includeRecord = false;
-      } else if (deliveryFilterStart) {
-        if (deliveryDate < new Date(deliveryFilterStart).getTime()) includeRecord = false;
-      } else if (deliveryFilterEnd) {
-        if (deliveryDate > new Date(deliveryFilterEnd).getTime() + 86400000) includeRecord = false;
-      }
-
-      if (!includeRecord) return;
-
-      const hStats = historyStatusMap[d.tracking_id];
-      let status = "Not Run";
-      if (hStats) {
-        status = hStats.isClean ? "Clean" : "Failing";
-      }
-
-      pipelineList.push({
-        ...d,
-        qc_status: status,
-        total_qc_runs: hStats ? hStats.totalRuns : 0,
-        final_error_rate: hStats ? hStats.errorRate : null,
-        error_count: hStats ? hStats.errorCount : null
       });
-    });
+      pipelineList.sort((a, b) => new Date(a.original_delivery_date).getTime() - new Date(b.original_delivery_date).getTime());
+    }
 
-    pipelineList.sort((a, b) => new Date(a.original_delivery_date).getTime() - new Date(b.original_delivery_date).getTime());
-
-    // 🎯 NEW: Transform Pipeline Data into Scatter Plot Matrix Data
     const mappedRiskData = pipelineList.map((d: any) => {
-      // Force "Not Run" items below the 0% line (e.g., -15%) so they separate visually
       const plotErrorRate = d.qc_status === "Not Run" ? -15 : (d.final_error_rate || 0);
-      
       return {
-        date: new Date(d.original_delivery_date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+        date: d.original_delivery_date,
         originalDate: d.original_delivery_date,
         roscoId: d.tracking_id,
         deliveryId: d.delivery_uid,
-        projectName: d.project_name || d.client_account,
+        projectName: d.client_account,
         status: d.qc_status,
         runs: d.total_qc_runs,
         errorCount: d.error_count || 0,
-        errorRate: plotErrorRate, // The Y-Axis value
-        realErrorRate: d.final_error_rate || 0 // The actual label value
+        errorRate: plotErrorRate, 
+        realErrorRate: d.final_error_rate || 0 
       };
     });
 
-    // Grouping delivery tracking IDs back to processedGroups for main table mapping
-    const deliveryLookup: Record<string, any[]> = {};
-    pipelineList.forEach(d => {
-      if (!deliveryLookup[d.tracking_id]) deliveryLookup[d.tracking_id] = [];
-      deliveryLookup[d.tracking_id].push(d);
+    let actionCenterDeliveries = pipelineList.filter(d => {
+      const dDate = dataSource === "db" ? d._rawDateMs : new Date(d.original_delivery_date).getTime();
+      return dDate >= startOfWeek.getTime() && dDate <= endOfWeek.getTime();
     });
 
-    processedGroups.forEach(group => {
-      const allDeliveries = deliveryLookup[group.id] || [];
-      if (allDeliveries.length > 0) {
-        group.deliveryInfo = { ...allDeliveries[0], _total_associated_deliveries: allDeliveries.length };
-      }
+    actionCenterDeliveries = actionCenterDeliveries.filter((d: any) => {
+      const rId = (d.tracking_id || "").toLowerCase();
+      const dId = (d.delivery_uid || "").toLowerCase();
+      const uName = (d.user_name || "").toLowerCase();
+      
+      const matchRosco = searchRosco === "" || rId.includes(searchRosco.toLowerCase());
+      const matchDelivery = searchDelivery === "" || dId.includes(searchDelivery.toLowerCase());
+      const matchUser = searchUser === "" || uName.includes(searchUser.toLowerCase());
+
+      return matchRosco && matchDelivery && matchUser;
     });
 
-    // Apply Search/Filters
-    let filteredGroups = processedGroups.filter((group: any) => {
-      const searchLower = searchTerm.toLowerCase();
-      return (
-        (group.project_name || "").toLowerCase().includes(searchLower) ||
-        (group.user_name || "").toLowerCase().includes(searchLower) ||
-        (group.id || "").toLowerCase().includes(searchLower)
-      );
+    if (filterStatus === "clean") actionCenterDeliveries = actionCenterDeliveries.filter((d: any) => d.qc_status === "Clean");
+    else if (filterStatus === "error") actionCenterDeliveries = actionCenterDeliveries.filter((d: any) => d.qc_status === "Failing");
+
+    let run1RateSum = 0; let lastRunRateSum = 0; let groupCount = 0;
+    Object.values(unfilteredGroupsMap).forEach(group => {
+      groupCount++;
+      const first = group.allRuns[0]; const last = group.latestRun;
+      
+      let firstRate = first._computedErrorRate || 0;
+      if (firstRate === 0 && first.error_count > 0) firstRate = 100; 
+      let lastRate = last._computedErrorRate || 0;
+      if (lastRate === 0 && last.error_count > 0) lastRate = 100; 
+      
+      run1RateSum += firstRate; lastRunRateSum += lastRate;
     });
 
-    if (filterStatus === "clean") filteredGroups = filteredGroups.filter(g => g.latestRun.error_count === 0);
-    else if (filterStatus === "error") filteredGroups = filteredGroups.filter(g => g.latestRun.error_count > 0);
+    const run1Rate = groupCount > 0 ? (run1RateSum / groupCount) : 0;
+    const lastRunRate = groupCount > 0 ? (lastRunRateSum / groupCount) : 0;
 
     return { 
-      filteredData: filteredGroups, 
-      kpis: { totalRuns, globalEvals, avgDuration: avgDuration.toFixed(1), globalErrorRate: globalErrorRate.toFixed(1) },
+      kpis: { 
+        totalRuns, globalEvals, avgDuration: avgDuration.toFixed(1), 
+        run1ErrorRate: run1Rate.toFixed(1), lastRunErrorRate: lastRunRate.toFixed(1)
+      },
       chartData: { trendTimeline, projectErrors, topFailedRules, scatterData, topUsers, densityDistData },
       deliveryRiskData: mappedRiskData,
-      pipelineTableData: pipelineList,
+      actionCenterDeliveries, 
       globalRuleStats: ruleStats
     };
-  }, [historyData, deliveryData, searchTerm, filterStatus, deliveryFilterStart, deliveryFilterEnd]);
+  }, [historyData, deliveryData, searchRosco, searchDelivery, searchUser, filterStatus, globalStartDate, globalEndDate, weekOffset, dataSource]);
 
   const modalAnalytics = useMemo(() => {
     if (!selectedRecord || !selectedRecord.qc_summary) return null;
@@ -407,13 +479,8 @@ const QcHistoryDashboard = () => {
     const failedRules: any[] = [];
 
     Object.entries(selectedRecord.qc_summary).forEach(([key, stats]: any) => {
-      totalPass += stats.Passed || 0;
-      totalFail += stats.Failed || 0;
-      totalNA += stats.NA || 0;
-
-      if (stats.Failed > 0) {
-        failedRules.push({ fullName: formatCheckName(key), shortName: truncateText(formatCheckName(key), 12), fails: stats.Failed });
-      }
+      totalPass += stats.Passed || 0; totalFail += stats.Failed || 0; totalNA += stats.NA || 0;
+      if (stats.Failed > 0) failedRules.push({ fullName: formatCheckName(key), shortName: truncateText(formatCheckName(key), 12), fails: stats.Failed });
     });
 
     const executionData = [
@@ -423,7 +490,6 @@ const QcHistoryDashboard = () => {
     ].filter(d => d.value > 0);
 
     failedRules.sort((a, b) => b.fails - a.fails);
-
     return { executionData, failedRules, totalEvals: totalPass + totalFail + totalNA };
   }, [selectedRecord]);
 
@@ -482,7 +548,6 @@ const QcHistoryDashboard = () => {
     return null;
   };
 
-  // 🎯 NEW: Master Tooltip for the Delivery Risk Matrix
   const DeliveryRiskTooltip = ({ active, payload }: any) => {
     if (active && payload && payload.length) {
       const data = payload[0].payload;
@@ -580,7 +645,6 @@ const QcHistoryDashboard = () => {
                 <div className="bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-800/60 rounded-xl p-4 shadow-sm flex flex-col group animate-in zoom-in-95 duration-500 fill-mode-both" style={{ animationDelay: '300ms' }}>
                   <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 flex items-center z-10">
                     Quality Footprint (Radar)
-                    <InfoTooltip align="left" text="Maps the distribution of failures across all evaluated rules. A larger web means widespread rule failures." />
                   </h3>
                   <div className="flex-1 w-full relative transition-transform duration-500 group-hover:scale-105">
                     {modalAnalytics.failedRules.length > 2 ? (
@@ -629,8 +693,8 @@ const QcHistoryDashboard = () => {
                 Global Benchmarking by Rule
               </h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {selectedRecord.qc_summary && Object.keys(selectedRecord.qc_summary).length > 0 ? (
-                  Object.entries(selectedRecord.qc_summary).map(([key, stats]: [string, any], idx) => {
+                {getValidSummary(selectedRecord.qc_summary) && Object.keys(getValidSummary(selectedRecord.qc_summary)).length > 0 ? (
+                  Object.entries(getValidSummary(selectedRecord.qc_summary)).map(([key, stats]: [string, any], idx) => {
                     const cleanName = formatCheckName(key);
                     const total = stats.Total_Evaluated || 0;
                     const passed = stats.Passed || 0;
@@ -701,7 +765,7 @@ const QcHistoryDashboard = () => {
         </div>
       )}
 
-      {/* HEADER */}
+      {/* HEADER WITH GLOBAL DATE FILTERS */}
       <div className="mt-2 animate-in fade-in slide-in-from-left-4 duration-500 fill-mode-both flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4" style={{ animationDelay: '100ms' }}>
         <h1 className="text-2xl lg:text-3xl font-black tracking-tight flex items-center gap-3">
           <ShieldCheck className="text-blue-500" size={32} /> General QC Dashboard
@@ -710,25 +774,25 @@ const QcHistoryDashboard = () => {
         <div className="flex flex-col sm:flex-row items-center gap-3 w-full xl:w-auto bg-white dark:bg-[#111623] p-1.5 rounded-xl border border-slate-200 dark:border-slate-800/60 shadow-sm">
           <div className="flex items-center gap-2 bg-white dark:bg-[#0B0F1A] border border-indigo-200 dark:border-indigo-500/30 p-1.5 rounded-lg shadow-sm">
             <span className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest pl-2 flex items-center gap-1">
-              
+              <CalendarDays size={10}/> Global Filter:
             </span>
             <input 
               type="date" 
-              value={deliveryFilterStart} 
-              onChange={e => setDeliveryFilterStart(e.target.value)} 
+              value={globalStartDate} 
+              onChange={e => setGlobalStartDate(e.target.value)} 
               className="bg-transparent text-xs outline-none text-slate-600 dark:text-slate-300 cursor-pointer 
                         dark:scheme-dark dark:[&::-webkit-calendar-picker-indicator]:invert-[0.8] dark:[&::-webkit-calendar-picker-indicator]:brightness-200"
             />
             <span className="text-slate-400 text-xs">-</span>
             <input 
               type="date" 
-              value={deliveryFilterEnd} 
-              onChange={e => setDeliveryFilterEnd(e.target.value)} 
+              value={globalEndDate} 
+              onChange={e => setGlobalEndDate(e.target.value)} 
               className="bg-transparent text-xs outline-none text-slate-600 dark:text-slate-300 cursor-pointer pr-2 
                         dark:scheme-dark dark:[&::-webkit-calendar-picker-indicator]:invert-[0.8] dark:[&::-webkit-calendar-picker-indicator]:brightness-200"
             />
-            {(deliveryFilterStart || deliveryFilterEnd) && (
-              <button onClick={() => { setDeliveryFilterStart(""); setDeliveryFilterEnd(""); }} className="p-1 hover:bg-indigo-50 dark:hover:bg-indigo-500/20 rounded text-indigo-500 mr-1"><X size={12}/></button>
+            {(globalStartDate || globalEndDate) && (
+              <button onClick={() => { setGlobalStartDate(""); setGlobalEndDate(""); }} className="p-1 hover:bg-indigo-50 dark:hover:bg-indigo-500/20 rounded text-indigo-500 mr-1"><X size={12}/></button>
             )}
           </div>
           <button 
@@ -742,18 +806,19 @@ const QcHistoryDashboard = () => {
       </div>
 
       {/* KPI CARDS */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         {[
           { title: "Total Audits", value: kpis.totalRuns, icon: <Activity />, color: "text-blue-500" },
           { title: "Data Points Verified", value: formatLargeNumber(kpis.globalEvals), icon: <Layers />, color: "text-indigo-500", tooltip: "Sum of all individual cell/row checks evaluated across the entire database history." },
-          { title: "Global Error Rate", value: `${kpis.globalErrorRate}%`, icon: <Target />, color: Number(kpis.globalErrorRate) > 10 ? "text-rose-500" : "text-emerald-500", tooltip: "Formula: (Global Fails ÷ Global Data Points Verified) × 100." },
+          { title: "Run 1 Error", value: `${kpis.run1ErrorRate}%`, icon: <Target />, color: Number(kpis.run1ErrorRate) > 10 ? "text-rose-500" : "text-amber-500", tooltip: "Average error rate across the very first QC run of each delivery." },
+          { title: "Last Run Error", value: `${kpis.lastRunErrorRate}%`, icon: <CheckCircle2 />, color: Number(kpis.lastRunErrorRate) > 10 ? "text-rose-500" : "text-emerald-500", tooltip: "Average error rate across the most recent QC run of each delivery." },
           { title: "Avg Process Time", value: `${kpis.avgDuration}s`, icon: <Clock />, color: "text-amber-500", tooltip: "Average duration of the Python QC script execution." },
         ].map((kpi, idx) => (
           <div key={idx} className="group bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-800/60 rounded-xl p-5 shadow-sm flex flex-col justify-between hover:-translate-y-1 hover:shadow-md hover:border-blue-500/50 transition-all duration-300 animate-in slide-in-from-bottom-6 fade-in fill-mode-both" style={{ animationDelay: `${(idx * 100) + 200}ms` }}>
             <div className="flex items-center justify-between mb-3">
               <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300 transition-colors flex items-center">
                 {kpi.title} 
-                {kpi.tooltip && <InfoTooltip text={kpi.tooltip} align={idx === 3 ? "right" : "left"} />}
+                {kpi.tooltip && <InfoTooltip text={kpi.tooltip} align={idx === 4 ? "right" : "left"} />}
               </span>
               <div className={`${kpi.color} bg-slate-50 dark:bg-slate-800/50 p-2 rounded-lg transition-transform duration-300 group-hover:scale-110 group-hover:rotate-3`}>{React.cloneElement(kpi.icon, { size: 16 })}</div>
             </div>
@@ -761,6 +826,411 @@ const QcHistoryDashboard = () => {
           </div>
         ))}
       </div>
+
+      {/* 🎯 NEW: SUPER ACTION CENTER DASHBOARD */}
+      {actionCenterDeliveries && (
+        <div className="bg-white dark:bg-[#111623] border border-indigo-200 dark:border-indigo-500/30 rounded-xl shadow-sm overflow-hidden flex flex-col animate-in slide-in-from-bottom-10 fade-in duration-700 fill-mode-both">
+          
+          <div className="p-4 border-b border-indigo-100 dark:border-indigo-500/20 bg-indigo-50/50 dark:bg-indigo-500/5 flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4">
+            
+            <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+              <h3 className="text-sm font-black text-indigo-700 dark:text-indigo-400 flex items-center gap-2">
+                <CalendarRange size={16}/> Action Center
+              </h3>
+              <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-[#0B0F1A] p-1 rounded-full border border-slate-200 dark:border-slate-700/50">
+                {[
+                  { label: "-2W", value: -2 },
+                  { label: "-1W", value: -1 },
+                  { label: "W", value: 0 },
+                  { label: "+1W", value: 1 },
+                  { label: "+2W", value: 2 },
+                ].map(opt => (
+                  <button 
+                    key={opt.value}
+                    onClick={() => setWeekOffset(opt.value)}
+                    className={`px-3 py-1 rounded-full text-[10px] font-bold transition-all ${weekOffset === opt.value ? 'bg-indigo-500 text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-indigo-500 dark:hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800'}`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* 🎯 DATA SOURCE TOGGLE (FAILSAFE) */}
+              <div className="flex items-center gap-1 bg-slate-100 dark:bg-[#0B0F1A] p-1 rounded-full border border-slate-200 dark:border-slate-700/50 sm:ml-2">
+                <button 
+                  onClick={() => setDataSource("merged")}
+                  className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold transition-all ${dataSource === "merged" ? 'bg-indigo-500 text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-indigo-500 dark:hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800'}`}
+                  title="Normal Mode: Merges QC Data with Google Sheets delivery dates."
+                >
+                  <Table size={12}/>  Sync
+                </button>
+                <button 
+                  onClick={() => setDataSource("db")}
+                  className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold transition-all ${dataSource === "db" ? 'bg-indigo-500 text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-indigo-500 dark:hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800'}`}
+                  title="Failsafe Mode: If Google Sheets disconnects, click here to view raw database records by QC run date."
+                >
+                  <Database size={12}/> DB 
+                </button>
+              </div>
+              
+              <span className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest px-2 py-1 bg-white dark:bg-[#0B0F1A] border border-indigo-100 dark:border-indigo-500/30 rounded shadow-sm shrink-0">
+                {actionCenterDeliveries.length} Deliveries Due
+              </span>
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-center gap-3 w-full xl:w-auto">
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <div className="relative w-full sm:w-32">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={12} />
+                  <input type="text" placeholder="Rosco ID..." value={searchRosco} onChange={(e) => setSearchRosco(e.target.value)} className="w-full bg-white dark:bg-[#0B0F1A] border border-indigo-100 dark:border-slate-700 text-[10px] font-medium rounded-lg pl-7 pr-2 py-2 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all dark:text-white placeholder:text-slate-400" />
+                </div>
+                <div className="relative w-full sm:w-32">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={12} />
+                  <input type="text" placeholder="Delivery ID..." value={searchDelivery} onChange={(e) => setSearchDelivery(e.target.value)} className="w-full bg-white dark:bg-[#0B0F1A] border border-indigo-100 dark:border-slate-700 text-[10px] font-medium rounded-lg pl-7 pr-2 py-2 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all dark:text-white placeholder:text-slate-400" />
+                </div>
+                <div className="relative w-full sm:w-32">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={12} />
+                  <input type="text" placeholder="User Name..." value={searchUser} onChange={(e) => setSearchUser(e.target.value)} className="w-full bg-white dark:bg-[#0B0F1A] border border-indigo-100 dark:border-slate-700 text-[10px] font-medium rounded-lg pl-7 pr-2 py-2 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all dark:text-white placeholder:text-slate-400" />
+                </div>
+              </div>
+              
+              <div className="relative shrink-0">
+                <button onClick={() => setIsFilterOpen(!isFilterOpen)} className="flex items-center justify-center gap-2 px-3 py-2 bg-white dark:bg-[#0B0F1A] border border-indigo-100 dark:border-slate-700 rounded-lg text-xs font-bold hover:border-indigo-500 hover:text-indigo-500 active:scale-95 transition-all text-slate-600 dark:text-slate-300 w-32">
+                  <Filter size={14} /> {filterStatus === 'all' && "All Status"} {filterStatus === 'clean' && "Clean"} {filterStatus === 'error' && "Errors"}
+                </button>
+                {isFilterOpen && (
+                  <div className="absolute right-0 mt-2 w-40 bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl z-20 overflow-hidden text-xs animate-in slide-in-from-top-2 fade-in duration-200">
+                    <button onClick={() => { setFilterStatus("all"); setIsFilterOpen(false); }} className={`w-full text-left px-4 py-2 font-bold hover:bg-slate-50 dark:hover:bg-slate-800/50 ${filterStatus === 'all' ? 'text-indigo-500' : 'text-slate-600 dark:text-slate-300'}`}>All Audits</button>
+                    <button onClick={() => { setFilterStatus("clean"); setIsFilterOpen(false); }} className={`w-full text-left px-4 py-2 font-bold hover:bg-slate-50 dark:hover:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800/60 ${filterStatus === 'clean' ? 'text-emerald-500' : 'text-slate-600 dark:text-slate-300'}`}>Clean Audits Only</button>
+                    <button onClick={() => { setFilterStatus("error"); setIsFilterOpen(false); }} className={`w-full text-left px-4 py-2 font-bold hover:bg-slate-50 dark:hover:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800/60 ${filterStatus === 'error' ? 'text-rose-500' : 'text-slate-600 dark:text-slate-300'}`}>Audits with Errors</button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+          
+          <div className="overflow-x-auto custom-scrollbar">
+            <table className="w-full text-left border-collapse min-w-[1200px]">
+              <thead>
+                <tr className="bg-slate-50 dark:bg-[#0B0F1A]/80 border-b border-slate-200 dark:border-slate-800/60 text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  <th className="px-5 py-3 font-black text-indigo-500">
+                    {dataSource === 'db' ? 'Last Run Date' : 'Target Date'}
+                  </th>
+                  <th className="px-5 py-3 font-black">Delivery ID</th>
+                  <th className="px-5 py-3 font-black">Rosco ID</th>
+                  <th className="px-5 py-3 font-black">Project</th>
+                  <th className="px-5 py-3 font-black">User</th>
+                  <th className="px-5 py-3 font-black">QC Type</th>
+                  <th className="px-5 py-3 font-black">Runs</th>
+                  <th className="px-5 py-3 font-black">Latest Status</th>
+                  <th className="px-5 py-3 font-black">Trend (Gained / Lost)</th>
+                  <th className="px-5 py-3 font-black text-right">Details</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
+                {actionCenterDeliveries.length === 0 ? (
+                  <tr>
+                    <td colSpan={10} className="px-5 py-10 text-center text-slate-400 text-xs font-medium italic">
+                      No deliveries match your search filters for this week.
+                    </td>
+                  </tr>
+                ) : (
+                  actionCenterDeliveries.map((row: any, idx: number) => {
+                    const group = row.groupData;
+                    const toggleId = row.delivery_uid || `fallback-${idx}`;
+
+                    // 🎯 DYNAMIC COLOR MAPPER FOR QC TYPE
+                    const getQcTypeBadge = (qcType: string) => {
+                      if (!qcType || qcType === "N/A" || qcType === "--") {
+                        return <span className="text-slate-400 italic">--</span>;
+                      }
+                      
+                      const t = qcType.toLowerCase();
+                      let typeColor = "bg-blue-50 text-blue-600 border-blue-200 dark:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/30";
+                      
+                      if (t.includes("mm")) typeColor = "bg-purple-50 text-purple-600 border-purple-200 dark:bg-purple-500/10 dark:text-purple-400 dark:border-purple-500/30";
+                      else if (t.includes("sport") || t.includes("specific")) typeColor = "bg-orange-50 text-orange-600 border-orange-200 dark:bg-orange-500/10 dark:text-orange-400 dark:border-orange-500/30";
+
+                      return (
+                        <span className={`inline-flex items-center px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest border ${typeColor}`}>
+                          {qcType}
+                        </span>
+                      );
+                    };
+
+                    if (!group) {
+                      return (
+                        <tr key={toggleId} className="hover:bg-slate-50 dark:hover:bg-white/[0.02] transition-colors">
+                          <td className="px-5 py-4">
+                            <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-indigo-50 dark:bg-indigo-500/10 text-[10px] font-bold text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30">
+                              <Calendar size={10} /> {row.original_delivery_date}
+                            </span>
+                          </td>
+                          <td className="px-5 py-4"><div className="flex items-center gap-2 text-xs font-mono text-slate-500">{row.delivery_uid || "N/A"}</div></td>
+                          <td className="px-5 py-4"><div className="flex items-center gap-2 text-sm font-black dark:text-white"><Hash size={14} className="text-slate-400"/> {row.tracking_id}</div></td>
+                          <td className="px-5 py-4"><div className="flex items-center gap-2 text-xs font-medium dark:text-slate-200 truncate max-w-[200px]" title={row.client_account}><FolderGit2 size={12} className="text-blue-500 shrink-0"/> {row.client_account || "Unknown"}</div></td>
+                          <td className="px-5 py-4">
+                            <div className="flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300">
+                              <User size={12} className="text-slate-400" /> {row.user_name || "Pending"}
+                            </div>
+                          </td>
+                          <td className="px-5 py-4">{getQcTypeBadge(row.qc_type)}</td>
+                          <td className="px-5 py-4"><span className="text-xs font-bold text-slate-400">0 Runs</span></td>
+                          <td className="px-5 py-4"><span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-slate-400"><HelpCircle size={12}/> Not Run</span></td>
+                          <td className="px-5 py-4"><span className="text-[10px] text-slate-400 italic">--</span></td>
+                          <td className="px-5 py-4 text-right"></td>
+                        </tr>
+                      );
+                    }
+
+                    const activeLines = activeChartLines[group.id] || ['Total Errors'];
+                    const trendData = group.allRuns.map((r: any, i: number) => {
+                      const dp: any = { name: `Run ${i + 1}`, 'Total Errors': r.error_count || 0 };
+                      group.allFailedRules.forEach((rule: string) => {
+                        const rawRuleKey = Object.keys(r.qc_summary || {}).find(k => formatCheckName(k) === rule);
+                        dp[rule] = rawRuleKey && r.qc_summary[rawRuleKey] ? r.qc_summary[rawRuleKey].Failed : 0;
+                      });
+                      return dp;
+                    });
+
+                    return (
+                      <React.Fragment key={toggleId}>
+                        <tr 
+                          onClick={() => toggleGroup(toggleId)} 
+                          className={`hover:bg-slate-50 dark:hover:bg-white/[0.02] transition-colors cursor-pointer animate-in fade-in fill-mode-both ${expandedGroups[toggleId] ? 'bg-indigo-50/30 dark:bg-indigo-500/10' : ''}`}
+                        >
+                          <td className="px-5 py-4">
+                            <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-indigo-50 dark:bg-indigo-500/10 text-[10px] font-bold text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30">
+                              <Calendar size={10} /> {row.original_delivery_date}
+                            </span>
+                          </td>
+                          <td className="px-5 py-4"><div className="flex items-center gap-2 text-xs font-mono text-slate-500">{row.delivery_uid || "N/A"}</div></td>
+                          <td className="px-5 py-4"><div className="flex items-center gap-2 text-sm font-black dark:text-white"><Hash size={14} className="text-slate-400"/> {row.tracking_id || group.id}</div></td>
+                          <td className="px-5 py-4"><div className="flex items-center gap-2 text-xs font-medium dark:text-slate-200 truncate max-w-[200px]" title={row.client_account || group.project_name}><FolderGit2 size={12} className="text-blue-500 shrink-0"/> {row.client_account || group.project_name || "Unknown"}</div></td>
+                          <td className="px-5 py-4">
+                            <div className="flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300">
+                              <User size={12} className="text-slate-400" /> {group.user_name || "System"}
+                            </div>
+                          </td>
+                          <td className="px-5 py-4">{getQcTypeBadge(row.qc_type || group.latestRun.qc_type)}</td>
+                          <td className="px-5 py-4"><span className="text-xs font-bold text-slate-500 dark:text-slate-400">{group.totalRuns} Run{group.totalRuns > 1 ? 's' : ''}</span></td>
+                          <td className="px-5 py-4">
+                            {group.latestRun.error_count === 0 ? (
+                              <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 border border-emerald-200"><CheckCircle2 size={10} /> Clean</span>
+                            ) : (
+                              <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold border ${group.latestRun._computedErrorRate > 25 ? 'bg-rose-50 text-rose-600 border-rose-200' : 'bg-amber-50 text-amber-600 border-amber-200'}`}>
+                                <Target size={10} /> {group.latestRun._computedErrorRate.toFixed(1)}% Fail
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-5 py-4">
+                            <div className="flex flex-col gap-1">
+                              {group.totalRuns === 1 ? (
+                                <span className="text-[10px] text-slate-400 italic">No previous runs</span>
+                              ) : (
+                                <>
+                                  {group.overallFixed.length > 0 && <span className="text-[10px] font-bold text-emerald-500 flex items-center gap-1"><TrendingDown size={12}/> Gained: {group.overallFixed.join(', ')}</span>}
+                                  {group.overallBroken.length > 0 && <span className="text-[10px] font-bold text-rose-500 flex items-center gap-1"><TrendingUp size={12}/> Lost: {group.overallBroken.join(', ')}</span>}
+                                  {group.overallFixed.length === 0 && group.overallBroken.length === 0 && <span className="text-[10px] text-slate-400">No change in failing rules</span>}
+                                </>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-5 py-4 text-right">
+                            <ChevronRight size={18} className={`inline text-slate-400 transition-transform duration-300 ${expandedGroups[toggleId] ? 'rotate-90 text-indigo-500' : ''}`} />
+                          </td>
+                        </tr>
+
+                        {/* EXPANDED HISTORY ROWS, CHART & MATRIX */}
+                        {expandedGroups[toggleId] && (
+                          <tr className="bg-slate-50/50 dark:bg-[#0B0F1A]/80 shadow-inner">
+                            <td colSpan={10} className="p-0 border-b border-slate-200 dark:border-slate-800">
+                              <div className="py-6 px-4 sm:px-8 border-l-4 border-indigo-500 ml-5 my-2">
+                                
+                                <div className="flex justify-between items-center mb-6 border-b border-slate-200 dark:border-slate-700/60 pb-4">
+                                  <h4 className="text-sm font-black uppercase text-slate-700 dark:text-slate-200 flex items-center gap-2">
+                                    <Activity className="text-indigo-500" size={16}/> Pre-Delivery QC Journey: {row.delivery_uid || group.id}
+                                  </h4>
+                                </div>
+                                
+                                <div className="flex flex-col gap-2 min-w-[700px] mb-8">
+                                  {group.allRuns.map((run: any, rIdx: number) => (
+                                    <div key={run.id} onClick={(e) => { e.stopPropagation(); setSelectedRecord(run); }} className="flex items-center p-3 bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-700/60 rounded-lg hover:border-indigo-500/50 cursor-pointer group/row transition-all gap-4">
+                                      
+                                      <div className="flex items-center gap-2 w-20 shrink-0">
+                                        <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded">Run {rIdx + 1}</span>
+                                      </div>
+                                      <div className="text-xs text-slate-600 dark:text-slate-300 w-32 shrink-0 flex items-center gap-1.5"><CalendarDays size={12}/> {new Date(run.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})}</div>
+                                      
+                                      <div className="w-24 shrink-0">
+                                        {run.error_count > 0 ? (
+                                          <span className="text-xs font-bold text-rose-500 flex items-center gap-1"><AlertCircle size={12}/> {run.error_count} Errors</span>
+                                        ) : (
+                                          <span className="text-xs font-bold text-emerald-500 flex items-center gap-1"><CheckCircle2 size={12}/> Clean</span>
+                                        )}
+                                      </div>
+
+                                      <div className="flex-1 border-l border-slate-200 dark:border-slate-700 pl-4 flex flex-col justify-center min-h-[32px]">
+                                        {rIdx === 0 ? (
+                                          <span className="text-[10px] text-slate-400 italic">Initial baseline run.</span>
+                                        ) : (
+                                          <div className="flex flex-col gap-0.5">
+                                            <div className="flex items-center gap-2 text-[10px] font-bold">
+                                              <span className="text-slate-500 uppercase tracking-widest text-[9px]">Delta:</span>
+                                              {run.errorDelta > 0 ? <span className="text-rose-500">+{run.errorDelta} Errors</span> : run.errorDelta < 0 ? <span className="text-emerald-500">{run.errorDelta} Errors</span> : <span className="text-slate-400">No Change in Volume</span>}
+                                            </div>
+                                            
+                                            {(run.stepFixed.length > 0 || run.stepBroken.length > 0) && (
+                                              <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1">
+                                                {run.stepFixed.length > 0 && <span className="text-[10px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1 leading-tight"><TrendingDown size={10}/> <span className="font-semibold">Fixed:</span> {run.stepFixed.join(', ')}</span>}
+                                                {run.stepBroken.length > 0 && <span className="text-[10px] text-rose-600 dark:text-rose-400 flex items-center gap-1 leading-tight"><TrendingUp size={10}/> <span className="font-semibold">Broke:</span> {run.stepBroken.join(', ')}</span>}
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+
+                                      <div className="w-8 shrink-0 text-right">
+                                        <BarChart3 size={14} className="text-indigo-500 opacity-0 group-hover/row:opacity-100 transition-opacity ml-auto"/>
+                                      </div>
+                                    </div>
+                                  ))}
+                                  
+                                  {dataSource !== "db" && (
+                                    <div className="flex items-center gap-4 pl-4 pt-2">
+                                      <div className="w-16 flex justify-end text-slate-300 dark:text-slate-600">
+                                        <ArrowRight size={16}/>
+                                      </div>
+                                      <div className="flex-1 flex items-center gap-3">
+                                        <span className="px-3 py-1.5 rounded-lg border border-indigo-200 dark:border-indigo-500/30 bg-indigo-50 dark:bg-indigo-500/10 flex items-center gap-2 text-xs font-bold text-indigo-600 dark:text-indigo-400 shadow-sm">
+                                          <Calendar size={14}/> Handed off for Delivery on {row.original_delivery_date}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {group.totalRuns > 1 && (
+                                  <div className="mb-8 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                                    <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 mb-4">
+                                      <h4 className="text-[10px] font-black uppercase text-slate-400 flex items-center gap-2 shrink-0">
+                                        <LineChartIcon size={12}/> Error Volume Trend
+                                      </h4>
+                                      
+                                      <div className="flex flex-wrap gap-1.5 items-center">
+                                        <button 
+                                          onClick={() => toggleChartLine(group.id, 'Total Errors')}
+                                          className={`px-2 py-1 text-[9px] font-bold rounded-md border transition-all ${activeLines.includes('Total Errors') ? 'bg-rose-50 border-rose-500 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400' : 'bg-transparent border-slate-200 text-slate-400 dark:border-slate-700'}`}
+                                        >
+                                          Total Errors
+                                        </button>
+                                        {group.allFailedRules.map((rule: string, idx: number) => {
+                                          const isActive = activeLines.includes(rule);
+                                          const color = CHART_COLORS[idx % CHART_COLORS.length];
+                                          return (
+                                            <button 
+                                              key={rule}
+                                              onClick={() => toggleChartLine(group.id, rule)}
+                                              className={`px-2 py-1 text-[9px] font-bold rounded-md border transition-all`}
+                                              style={isActive ? { backgroundColor: `${color}20`, borderColor: color, color: color } : { borderColor: 'transparent' }}
+                                            >
+                                              <span className={!isActive ? 'text-slate-400' : ''}>{rule}</span>
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+
+                                    <div className="h-64 w-full bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-700/60 rounded-xl p-4 shadow-sm">
+                                      <ResponsiveContainer width="100%" height="100%">
+                                        <LineChart data={trendData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#334155" opacity={0.2} />
+                                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: '#64748b' }} dy={10} />
+                                          <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: '#64748b' }} />
+                                          <RechartsTooltip 
+                                            cursor={{ stroke: '#334155', strokeWidth: 1, strokeDasharray: '3 3' }}
+                                            contentStyle={{ backgroundColor: '#111623', border: '1px solid #1e293b', borderRadius: '8px', color: '#fff', fontSize: '10px', fontWeight: 'bold' }}
+                                          />
+                                          
+                                          {activeLines.includes('Total Errors') && (
+                                            <Line type="monotone" dataKey="Total Errors" stroke="#f43f5e" strokeWidth={3} dot={{ r: 4, fill: '#f43f5e', strokeWidth: 2, stroke: '#fff' }} activeDot={{ r: 6 }} />
+                                          )}
+                                          
+                                          {group.allFailedRules.map((rule: string, idx: number) => {
+                                            if (!activeLines.includes(rule)) return null;
+                                            const color = CHART_COLORS[idx % CHART_COLORS.length];
+                                            return (
+                                              <Line key={rule} type="monotone" dataKey={rule} stroke={color} strokeWidth={2} dot={{ r: 3, fill: color, strokeWidth: 1, stroke: '#fff' }} activeDot={{ r: 5 }} />
+                                            );
+                                          })}
+                                        </LineChart>
+                                      </ResponsiveContainer>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {group.allFailedRules.length > 0 && group.totalRuns > 1 && (
+                                  <div className="animate-in fade-in slide-in-from-bottom-2 duration-500">
+                                    <h4 className="text-[10px] font-black uppercase text-slate-400 mb-3 flex items-center gap-2">
+                                      <Layers size={12}/> Rule Progression Matrix
+                                    </h4>
+                                    <div className="border border-slate-200 dark:border-slate-700/60 rounded-xl overflow-hidden bg-white dark:bg-[#111623] shadow-sm">
+                                      <div className="overflow-x-auto">
+                                        <table className="w-full text-left text-xs whitespace-nowrap">
+                                          <thead className="bg-slate-50 dark:bg-slate-800/40 border-b border-slate-200 dark:border-slate-700/60">
+                                            <tr>
+                                              <th className="px-4 py-3 font-bold text-slate-500 uppercase tracking-widest text-[9px] w-64">QC Rule</th>
+                                              {group.allRuns.map((r: any, i: number) => (
+                                                <th key={i} className="px-4 py-3 font-bold text-slate-500 text-center border-l border-slate-200 dark:border-slate-700/60 uppercase tracking-widest text-[9px] w-20">
+                                                  R{i + 1}
+                                                </th>
+                                              ))}
+                                            </tr>
+                                          </thead>
+                                          <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
+                                            {group.allFailedRules.map((rule: string) => (
+                                              <tr key={rule} className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
+                                                <td className="px-4 py-3 font-bold text-slate-700 dark:text-slate-300 truncate" title={rule}>{rule}</td>
+                                                {group.allRuns.map((r: any, i: number) => {
+                                                  const rawRuleKey = Object.keys(r.qc_summary || {}).find(k => formatCheckName(k) === rule);
+                                                  const fails = rawRuleKey && r.qc_summary[rawRuleKey] ? r.qc_summary[rawRuleKey].Failed : 0;
+                                                  
+                                                  return (
+                                                    <td key={i} className="px-4 py-3 text-center border-l border-slate-100 dark:border-slate-800/60">
+                                                      {fails > 0 ? (
+                                                        <span className="inline-flex justify-center items-center font-black text-[10px] text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-500/10 px-2 py-1 rounded w-8">
+                                                          {fails}
+                                                        </span>
+                                                      ) : (
+                                                        <span className="inline-flex justify-center items-center w-8 text-emerald-500">
+                                                          <CheckCircle2 size={14} />
+                                                        </span>
+                                                      )}
+                                                    </td>
+                                                  );
+                                                })}
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* --- ROW 1 CHARTS: Trends & ANOMALY DETECTION --- */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-72">
@@ -860,7 +1330,7 @@ const QcHistoryDashboard = () => {
         </div>
       </div>
 
-      {/* 🎯 NEW SECTION: DELIVERY READINESS PIPELINE */}
+      {/* 🎯 DELIVERY READINESS PIPELINE */}
       {deliveryRiskData.length > 0 && (
         <div className="mt-8 pt-8 border-t border-slate-200 dark:border-slate-800/60 animate-in fade-in duration-1000 fill-mode-both">
           
@@ -868,34 +1338,6 @@ const QcHistoryDashboard = () => {
             <h2 className="text-xl font-black tracking-tight flex items-center gap-3">
               <Truck className="text-indigo-500" size={28} /> Delivery Readiness Tracker
             </h2>
-            
-            <div className="flex items-center gap-2 bg-white dark:bg-[#0B0F1A] border border-indigo-200 dark:border-indigo-500/30 p-1.5 rounded-lg shadow-sm">
-              <span className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest pl-2 flex items-center gap-1">
-                <CalendarDays size={10}/> Delivery Date:
-              </span>
-              <input 
-                type="date" 
-                value={deliveryFilterStart} 
-                onChange={e => setDeliveryFilterStart(e.target.value)} 
-                className="bg-transparent text-xs outline-none text-slate-600 dark:text-slate-300 cursor-pointer 
-                          dark:scheme-dark 
-                          dark:[&::-webkit-calendar-picker-indicator]:invert 
-                          dark:[&::-webkit-calendar-picker-indicator]:brightness-150"
-              />
-              <span className="text-slate-400 text-xs">-</span>
-              <input 
-                type="date" 
-                value={deliveryFilterEnd} 
-                onChange={e => setDeliveryFilterEnd(e.target.value)} 
-                className="bg-transparent text-xs outline-none text-slate-600 dark:text-slate-300 cursor-pointer pr-2 
-                          dark:scheme-dark 
-                          dark:[&::-webkit-calendar-picker-indicator]:invert 
-                          dark:[&::-webkit-calendar-picker-indicator]:brightness-150"
-              />
-              {(deliveryFilterStart || deliveryFilterEnd) && (
-                <button onClick={() => { setDeliveryFilterStart(""); setDeliveryFilterEnd(""); }} className="p-1 hover:bg-indigo-50 dark:hover:bg-indigo-500/20 rounded text-indigo-500 mr-1"><X size={12}/></button>
-              )}
-            </div>
           </div>
           
           {/* 🎯 THE DELIVERY RISK SCATTER MATRIX */}
@@ -966,255 +1408,8 @@ const QcHistoryDashboard = () => {
             </div>
           </div>
 
-         
         </div>
       )}
-
-      {/* ORIGINAL DB DATA TABLE */}
-      <div className="bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-800/60 rounded-xl shadow-sm overflow-hidden flex-1 flex flex-col min-h-[400px] animate-in slide-in-from-bottom-10 fade-in duration-700 fill-mode-both" style={{ animationDelay: '900ms' }}>
-        
-
-        <div className="overflow-x-auto custom-scrollbar flex-1">
-          <table className="w-full text-left border-collapse min-w-[1100px]">
-            <thead>
-              <tr className="bg-slate-50/50 dark:bg-[#0B0F1A]/50 border-b border-slate-200 dark:border-slate-800/60 text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                <th className="px-5 py-3 font-black">Rosco ID</th>
-                <th className="px-5 py-3 font-black">Project Name</th>
-                <th className="px-5 py-3 font-black">Runs</th>
-                <th className="px-5 py-3 font-black">Latest Status</th>
-                <th className="px-5 py-3 font-black">Trend (Gained / Lost)</th>
-                <th className="px-5 py-3 font-black text-right">Details</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
-              {filteredData.length === 0 ? (
-                <tr><td colSpan={6} className="px-5 py-10 text-center text-slate-400 text-xs font-medium">No records found matching your filters.</td></tr>
-              ) : (
-                filteredData.map((group: any, idx: number) => {
-                  const activeLines = activeChartLines[group.id] || ['Total Errors'];
-                  
-                  const trendData = group.allRuns.map((r: any, i: number) => {
-                    const dp: any = { name: `Run ${i + 1}`, 'Total Errors': r.error_count || 0 };
-                    group.allFailedRules.forEach((rule: string) => {
-                      const rawRuleKey = Object.keys(r.qc_summary || {}).find(k => formatCheckName(k) === rule);
-                      dp[rule] = rawRuleKey && r.qc_summary[rawRuleKey] ? r.qc_summary[rawRuleKey].Failed : 0;
-                    });
-                    return dp;
-                  });
-
-                  return (
-                    <React.Fragment key={group.id}>
-                      {/* MASTER ROW FOR THE ROSCO ID */}
-                      <tr 
-                        onClick={() => toggleGroup(group.id)} 
-                        className={`hover:bg-slate-50 dark:hover:bg-white/[0.02] transition-colors cursor-pointer animate-in fade-in fill-mode-both ${expandedGroups[group.id] ? 'bg-slate-50 dark:bg-slate-800/20' : ''}`} 
-                        style={{ animationDelay: `${Math.min(idx * 30, 500)}ms` }}
-                      >
-                        <td className="px-5 py-4"><div className="flex items-center gap-2 text-sm font-black dark:text-white"><Hash size={14} className="text-slate-400" /> {group.id}</div></td>
-                        <td className="px-5 py-4"><div className="flex items-center gap-2 text-xs font-medium dark:text-slate-200"><FolderGit2 size={12} className="text-blue-500" /> {group.project_name || "Unknown"}</div></td>
-                        <td className="px-5 py-4"><span className="text-xs font-bold text-slate-500 dark:text-slate-400">{group.totalRuns} Run{group.totalRuns > 1 ? 's' : ''}</span></td>
-                        <td className="px-5 py-4">
-                          {group.latestRun.error_count === 0 ? (
-                            <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 border border-emerald-200"><CheckCircle2 size={10} /> Clean</span>
-                          ) : (
-                            <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-bold border ${group.latestRun._computedErrorRate > 25 ? 'bg-rose-50 text-rose-600 border-rose-200' : 'bg-amber-50 text-amber-600 border-amber-200'}`}>
-                              <Target size={10} /> {group.latestRun._computedErrorRate.toFixed(1)}% Fail
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-5 py-4">
-                          <div className="flex flex-col gap-1">
-                            {group.totalRuns === 1 ? (
-                              <span className="text-[10px] text-slate-400 italic">No previous runs</span>
-                            ) : (
-                              <>
-                                {group.overallFixed.length > 0 && <span className="text-[10px] font-bold text-emerald-500 flex items-center gap-1"><TrendingDown size={12}/> Gained: {group.overallFixed.join(', ')}</span>}
-                                {group.overallBroken.length > 0 && <span className="text-[10px] font-bold text-rose-500 flex items-center gap-1"><TrendingUp size={12}/> Lost: {group.overallBroken.join(', ')}</span>}
-                                {group.overallFixed.length === 0 && group.overallBroken.length === 0 && <span className="text-[10px] text-slate-400">No change in failing rules</span>}
-                              </>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-5 py-4 text-right">
-                          <ChevronRight size={18} className={`inline text-slate-400 transition-transform duration-300 ${expandedGroups[group.id] ? 'rotate-90' : ''}`} />
-                        </td>
-                      </tr>
-
-                      {/* EXPANDED HISTORY ROWS, CHART & MATRIX */}
-                      {expandedGroups[group.id] && (
-                        <tr className="bg-slate-50/50 dark:bg-[#0B0F1A]/80 shadow-inner">
-                          <td colSpan={6} className="p-0 border-b border-slate-200 dark:border-slate-800">
-                            <div className="py-6 px-4 sm:px-8 border-l-4 border-blue-500 ml-5 my-2">
-                              
-                              <h4 className="text-[10px] font-black uppercase text-slate-400 mb-4 flex items-center gap-2">
-                                <Activity size={12}/> Sequential Audit Trail: {group.id}
-                              </h4>
-                              
-                              {/* Individual Run Cards */}
-                              <div className="flex flex-col gap-2 min-w-[700px] mb-8">
-                                {group.allRuns.map((run: any, rIdx: number) => (
-                                  <div key={run.id} onClick={(e) => { e.stopPropagation(); setSelectedRecord(run); }} className="flex items-center p-3 bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-700/60 rounded-lg hover:border-blue-500/50 cursor-pointer group/row transition-all gap-4">
-                                    
-                                    <div className="flex items-center gap-2 w-20 shrink-0">
-                                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded">Run {rIdx + 1}</span>
-                                    </div>
-                                    <div className="text-xs text-slate-600 dark:text-slate-300 w-32 shrink-0 flex items-center gap-1.5"><CalendarDays size={12}/> {new Date(run.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'})}</div>
-                                    
-                                    <div className="w-24 shrink-0">
-                                      {run.error_count > 0 ? (
-                                        <span className="text-xs font-bold text-rose-500 flex items-center gap-1"><AlertCircle size={12}/> {run.error_count} Errors</span>
-                                      ) : (
-                                        <span className="text-xs font-bold text-emerald-500 flex items-center gap-1"><CheckCircle2 size={12}/> Clean</span>
-                                      )}
-                                    </div>
-
-                                    <div className="flex-1 border-l border-slate-200 dark:border-slate-700 pl-4 flex flex-col justify-center min-h-[32px]">
-                                      {rIdx === 0 ? (
-                                        <span className="text-[10px] text-slate-400 italic">Initial baseline run.</span>
-                                      ) : (
-                                        <div className="flex flex-col gap-0.5">
-                                          <div className="flex items-center gap-2 text-[10px] font-bold">
-                                            <span className="text-slate-500 uppercase tracking-widest text-[9px]">Delta:</span>
-                                            {run.errorDelta > 0 ? <span className="text-rose-500">+{run.errorDelta} Errors</span> : run.errorDelta < 0 ? <span className="text-emerald-500">{run.errorDelta} Errors</span> : <span className="text-slate-400">No Change in Volume</span>}
-                                          </div>
-                                          
-                                          {(run.stepFixed.length > 0 || run.stepBroken.length > 0) && (
-                                            <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1">
-                                              {run.stepFixed.length > 0 && <span className="text-[10px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1 leading-tight"><TrendingDown size={10}/> <span className="font-semibold">Fixed:</span> {run.stepFixed.join(', ')}</span>}
-                                              {run.stepBroken.length > 0 && <span className="text-[10px] text-rose-600 dark:text-rose-400 flex items-center gap-1 leading-tight"><TrendingUp size={10}/> <span className="font-semibold">Broke:</span> {run.stepBroken.join(', ')}</span>}
-                                            </div>
-                                          )}
-                                        </div>
-                                      )}
-                                    </div>
-
-                                    <div className="w-8 shrink-0 text-right">
-                                      <BarChart3 size={14} className="text-blue-500 opacity-0 group-hover/row:opacity-100 transition-opacity ml-auto"/>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-
-                              {group.totalRuns > 1 && (
-                                <div className="mb-8 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                                  <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 mb-4">
-                                    <h4 className="text-[10px] font-black uppercase text-slate-400 flex items-center gap-2 shrink-0">
-                                      <LineChartIcon size={12}/> Error Volume Trend
-                                    </h4>
-                                    
-                                    <div className="flex flex-wrap gap-1.5 items-center">
-                                      <button 
-                                        onClick={() => toggleChartLine(group.id, 'Total Errors')}
-                                        className={`px-2 py-1 text-[9px] font-bold rounded-md border transition-all ${activeLines.includes('Total Errors') ? 'bg-rose-50 border-rose-500 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400' : 'bg-transparent border-slate-200 text-slate-400 dark:border-slate-700'}`}
-                                      >
-                                        Total Errors
-                                      </button>
-                                      {group.allFailedRules.map((rule: string, idx: number) => {
-                                        const isActive = activeLines.includes(rule);
-                                        const color = CHART_COLORS[idx % CHART_COLORS.length];
-                                        return (
-                                          <button 
-                                            key={rule}
-                                            onClick={() => toggleChartLine(group.id, rule)}
-                                            className={`px-2 py-1 text-[9px] font-bold rounded-md border transition-all`}
-                                            style={isActive ? { backgroundColor: `${color}20`, borderColor: color, color: color } : { borderColor: 'transparent' }}
-                                          >
-                                            <span className={!isActive ? 'text-slate-400' : ''}>{rule}</span>
-                                          </button>
-                                        );
-                                      })}
-                                    </div>
-                                  </div>
-
-                                  <div className="h-64 w-full bg-white dark:bg-[#111623] border border-slate-200 dark:border-slate-700/60 rounded-xl p-4 shadow-sm">
-                                    <ResponsiveContainer width="100%" height="100%">
-                                      <LineChart data={trendData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#334155" opacity={0.2} />
-                                        <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: '#64748b' }} dy={10} />
-                                        <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: '#64748b' }} />
-                                        <RechartsTooltip 
-                                          cursor={{ stroke: '#334155', strokeWidth: 1, strokeDasharray: '3 3' }}
-                                          contentStyle={{ backgroundColor: '#111623', border: '1px solid #1e293b', borderRadius: '8px', color: '#fff', fontSize: '10px', fontWeight: 'bold' }}
-                                        />
-                                        
-                                        {activeLines.includes('Total Errors') && (
-                                          <Line type="monotone" dataKey="Total Errors" stroke="#f43f5e" strokeWidth={3} dot={{ r: 4, fill: '#f43f5e', strokeWidth: 2, stroke: '#fff' }} activeDot={{ r: 6 }} />
-                                        )}
-                                        
-                                        {group.allFailedRules.map((rule: string, idx: number) => {
-                                          if (!activeLines.includes(rule)) return null;
-                                          const color = CHART_COLORS[idx % CHART_COLORS.length];
-                                          return (
-                                            <Line key={rule} type="monotone" dataKey={rule} stroke={color} strokeWidth={2} dot={{ r: 3, fill: color, strokeWidth: 1, stroke: '#fff' }} activeDot={{ r: 5 }} />
-                                          );
-                                        })}
-                                      </LineChart>
-                                    </ResponsiveContainer>
-                                  </div>
-                                </div>
-                              )}
-
-                              {group.allFailedRules.length > 0 && group.totalRuns > 1 && (
-                                <div className="animate-in fade-in slide-in-from-bottom-2 duration-500">
-                                  <h4 className="text-[10px] font-black uppercase text-slate-400 mb-3 flex items-center gap-2">
-                                    <Layers size={12}/> Rule Progression Matrix
-                                  </h4>
-                                  <div className="border border-slate-200 dark:border-slate-700/60 rounded-xl overflow-hidden bg-white dark:bg-[#111623] shadow-sm">
-                                    <div className="overflow-x-auto">
-                                      <table className="w-full text-left text-xs whitespace-nowrap">
-                                        <thead className="bg-slate-50 dark:bg-slate-800/40 border-b border-slate-200 dark:border-slate-700/60">
-                                          <tr>
-                                            <th className="px-4 py-3 font-bold text-slate-500 uppercase tracking-widest text-[9px] w-64">QC Rule</th>
-                                            {group.allRuns.map((r: any, i: number) => (
-                                              <th key={i} className="px-4 py-3 font-bold text-slate-500 text-center border-l border-slate-200 dark:border-slate-700/60 uppercase tracking-widest text-[9px] w-20">
-                                                R{i + 1}
-                                              </th>
-                                            ))}
-                                          </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
-                                          {group.allFailedRules.map((rule: string) => (
-                                            <tr key={rule} className="hover:bg-slate-50 dark:hover:bg-slate-800/20 transition-colors">
-                                              <td className="px-4 py-3 font-bold text-slate-700 dark:text-slate-300 truncate" title={rule}>{rule}</td>
-                                              {group.allRuns.map((r: any, i: number) => {
-                                                const rawRuleKey = Object.keys(r.qc_summary || {}).find(k => formatCheckName(k) === rule);
-                                                const fails = rawRuleKey && r.qc_summary[rawRuleKey] ? r.qc_summary[rawRuleKey].Failed : 0;
-                                                
-                                                return (
-                                                  <td key={i} className="px-4 py-3 text-center border-l border-slate-100 dark:border-slate-800/60">
-                                                    {fails > 0 ? (
-                                                      <span className="inline-flex justify-center items-center font-black text-[10px] text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-500/10 px-2 py-1 rounded w-8">
-                                                        {fails}
-                                                      </span>
-                                                    ) : (
-                                                      <span className="inline-flex justify-center items-center w-8 text-emerald-500">
-                                                        <CheckCircle2 size={14} />
-                                                      </span>
-                                                    )}
-                                                  </td>
-                                                );
-                                              })}
-                                            </tr>
-                                          ))}
-                                        </tbody>
-                                      </table>
-                                    </div>
-                                  </div>
-                                </div>
-                              )}
-
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
     </div>
   );
 };

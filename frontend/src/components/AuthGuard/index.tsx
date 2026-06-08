@@ -3,10 +3,24 @@
 
 import { useOktaAuth, LoginCallback } from '@okta/okta-react';
 import { useEffect, useState } from 'react';
+import { usePathname } from 'next/navigation';
 
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const { authState, oktaAuth } = useOktaAuth();
   const [isHandlingCallback, setIsHandlingCallback] = useState(false);
+
+  // 🚨 2. GET THE CURRENT URL
+  const pathname = usePathname();
+
+  // 🚨 3. DEFINE YOUR PUBLIC URLS HERE
+  const publicPaths = [
+    "/public-report",
+    "/terms-of-service",
+    "/guest-dashboard"
+  ];
+
+  // Check if the current URL starts with any of our public paths
+  const isPublicPage = publicPaths.some(p => pathname?.startsWith(p));
 
   // 🚨 LOCAL DEV SWITCH
   const isLocalDev = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
@@ -23,6 +37,12 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
       window.history.replaceState({}, document.title, window.location.pathname);
     }
   }, [authState?.isAuthenticated, isHandlingCallback]);
+
+
+  // 🚨 4. THE VIP PASS: If it's a public page, completely skip all Okta checks!
+  if (isPublicPage) {
+    return <>{children}</>;
+  }
 
   // 1. HIGHEST PRIORITY: Render the callback handler FIRST! 
   if (isHandlingCallback && !isLocalDev) {

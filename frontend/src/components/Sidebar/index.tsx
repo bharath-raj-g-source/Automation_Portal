@@ -260,6 +260,7 @@ const projectImages: Record<string, string> = {
   "Laliga": "/sidebar_laliga.png",
   "EPL": "/sidebar_premier_league.png",
   "Serie A": "/sidebar_serie_a.png",
+  "Middle East Projects": "/sidebar_middle_east.png",
 };
 
 const Sidebar = () => {
@@ -334,7 +335,7 @@ const Sidebar = () => {
             <>
               <SidebarLink
                 icon={CircleGauge}
-                label="GMS Dashboard"
+                label="GMO DashBoard"
                 href="/gms-dashboard"
               />
               <SidebarLink
@@ -352,7 +353,12 @@ const Sidebar = () => {
                 label="BSA Early Warning"
                 href="/dashboards/early-warning"
               />
-              
+                {/* <SidebarLink
+                  icon={List}
+                  label="Schedule view"
+                  href="/dashboards/early-warning1"
+                />
+               */}
             </>
           )}
 
@@ -379,6 +385,11 @@ const Sidebar = () => {
                 icon={ListCheckIcon}
                 label="E2E Checks"
                 href="/priority/mm-bsa"
+              />
+              <SidebarLink
+                icon={ListCheckIcon}
+                label="Aus-NZ Media"
+                href="/app_aus_nz_requirement"
               />
             </>
           )}

@@ -10,7 +10,13 @@ import os
 # Import the standalone QC API application instance
 from qc_api import qc_router # Import the APIRouter object
 # Import the Dashboard routes APIRouter
+from app.dashboard_routes import dashboard_router , public_router
+
 from app.dashboard_routes import dashboard_router 
+from app.routes import aus_nz_routes
+# 1. Add the fresh file import near the top of main.py
+from early_warning_api import early_warning_router
+
 
 # --- CONFIGURATIONS ---
 
@@ -60,6 +66,21 @@ master_app.include_router(qc_router, prefix="/api/qc" , tags=["QC Automation"])
 
 # 2. Include the Dashboard Router (Example path: /api/dashboard/projects)
 master_app.include_router(dashboard_router, prefix="/api") 
+
+master_app.include_router(
+    aus_nz_routes.router, 
+    prefix="/api/dashboard/aus-nz",
+    tags=["AUS-NZ Automation"]
+)
+
+master_app.include_router(
+    early_warning_router,
+    tags=["Early Warning Automation Metadata Scanner"]
+)
+
+
+# 3. Mount the PUBLIC Router (/api/public/...) 🚨 NEW
+master_app.include_router(public_router, prefix="/api")
 
 
 # --- SERVER ---
