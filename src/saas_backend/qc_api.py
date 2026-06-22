@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 from usa_audit_service import process_usa_audit_logic_stream
 from mls_audit_service import process_mls_audit_logic_stream
 from intl_audit_service import process_intl_audit_logic_stream
+from intl_audit_service_2 import process_intl_audit_logic_stream_2
 from japan_service  import process_japan_bsr
 import traceback
 import uuid
@@ -513,11 +514,20 @@ def extract_fixtures_sheet(bsr_path):
 @qc_router.post("/run_qc")
 def run_general_qc(
     rosco_file: UploadFile = File(...),
-    bsr_file: UploadFile = File(...)
+    bsr_file: UploadFile = File(...),
+    
+    # 🎯 NEW: Catching tracking data from Frontend
+    rosco_id: str = Form(""),
+    destination_id: str = Form(""),
+    user_name: str = Form("System"),
+    project_name: str = Form("General QC"),
+    db: Session = Depends(get_db)
 ):
     """
     Streamlit-parity General QC with safe Metrics Tracking.
     """
+    t_start = time.time()
+    
     # 1. Initialize Tracker Safely
     tracker = QCAuditTracker(bsr_file.filename) if QCAuditTracker else None
     
@@ -589,7 +599,6 @@ def run_general_qc(
             sort_cols.extend(_flatten(col_map["bsr"].get(key)))
         sort_cols = [c for c in sort_cols if c in df.columns]
         
-        
         if sort_cols:
             df = df.sort_values(sort_cols).reset_index(drop=True)
         else:
@@ -633,8 +642,59 @@ def run_general_qc(
         color_excel(output_path, df)
         generate_summary_sheet(output_path, df, file_rules)
 
-        # ---------------- FINALIZE TRACKER ----------------
         if tracker: tracker.finalize()
+        
+        # =====================================================
+        # 🎯 DB LOGGING & QC SUMMARY EXTRACTION
+        # =====================================================
+        try:
+            qc_summary = {}
+            total_errors = 0
+            total_rows = len(df) if df is not None else 0
+            
+            if df is not None:
+                for col in df.columns:
+                    if not str(col).endswith("_OK"): continue
+                    try:
+                        failed = int(df[col].astype(str).str.upper().isin(["FALSE", "FAILED", "0"]).sum())
+                        passed = int(total_rows - failed)
+                        rule_name = str(col).replace("_OK", "")
+                        qc_summary[rule_name] = {
+                            "Total_Evaluated": total_rows,
+                            "Passed": passed,
+                            "Failed": failed,
+                            "NA": 0
+                        }
+                        total_errors += failed
+                    except: pass
+            
+            # Fallback Rosco ID parsing
+            extracted_rosco_id = rosco_id
+            if not rosco_id and bsr_file:
+                import re
+                m = re.search(r"#(\d+)", bsr_file.filename)
+                if m: extracted_rosco_id = m.group(1).strip()[:100]
+
+            run_duration = round(time.time() - t_start, 2)
+
+            db_record = RoscoSubmission(
+                rosco_id=extracted_rosco_id or "Unknown",
+                manual_rosco_id=rosco_id,
+                project_name=project_name,
+                destination_id=destination_id,
+                user_name=user_name,
+                run_duration=run_duration,
+                error_count=total_errors,
+                qc_summary=qc_summary,
+                original_filename=bsr_file.filename,
+                qc_type=project_name # 🎯 Dynamically tags it as LaLiga, etc.
+            )
+            db.add(db_record)
+            db.commit()
+            print(f"✅ DB Save Successful for {project_name}")
+        except Exception as db_err:
+            db.rollback()
+            print(f"❌ DB SAVE FAILED: {db_err}")
 
         return FileResponse(
             path=output_path,
@@ -704,6 +764,9 @@ async def run_general_qc(
     rosco_id: str = Form(""),
     destination_id: str = Form(""),
     user_name: str = Form(""),
+
+    # 🎯 ADD THIS LINE:
+    project_name: str = Form("General QC"),
 
     db: Session = Depends(get_db)
 
@@ -1218,16 +1281,17 @@ async def run_general_qc(
             )
             new_record = RoscoSubmission(
                 rosco_id=extracted_rosco_id,
-                project_name="QC Audit Run",
+                project_name=project_name, # 🎯 Updated to use dynamic name
                 manual_rosco_id=rosco_id,
                 destination_id=destination_id,
                 user_name=user_name,
                 run_duration=run_duration,
                 error_count=total_errors,
                 qc_summary=qc_summary,
-                original_filename=rosco_file.filename
+                original_filename=rosco_file.filename,
+                qc_type=project_name # 🎯 Dynamically tags it as "Middle East Projects"
             )
-            try:
+            try:    
                 db.add(new_record)
                 db.commit()
                 db.refresh(new_record)
@@ -1317,6 +1381,179 @@ async def run_general_qc(
                     f"{cleanup_err}"
                 )
 
+# @qc_router.post("/run-mm-bsa-qc")
+# async def run_mm_bsa_qc(
+#     adapt_file: UploadFile = File(...),
+#     rosco_file: Optional[UploadFile] = File(None),   
+#     fixture_file: Optional[UploadFile] = File(None), 
+#     previous_delivery_file: Optional[UploadFile] = File(None),
+#     bsr_file: Optional[UploadFile] = File(None),
+#     selected_checks: str = Form(...),
+#     bt_threshold: Optional[float] = Form(None),
+#     start_date: Optional[str] = Form(None),
+#     end_date: Optional[str] = Form(None)
+# ):
+#     try:
+#         print("\n🚀 ===== NEW REQUEST =====")
+
+#         # ---------------- PARSE CHECKS ----------------
+#         try:
+#             checks = json.loads(selected_checks)
+#         except:
+#             raise HTTPException(400, "Invalid selected_checks format")
+
+#         print("✅ Selected checks:", checks)
+
+#         # ---------------- SAVE FILES ----------------
+#         def save_file(file, prefix):
+#             if not file:
+#                 return None
+#             path = os.path.join(UPLOAD_FOLDER, f"{prefix}{int(time.time())}{file.filename}")
+#             with open(path, "wb") as f:
+#                 shutil.copyfileobj(file.file, f)
+#             return path
+
+#         adapt_path = save_file(adapt_file, "adapt")
+#         rosco_path = save_file(rosco_file, "rosco")
+#         fixture_path = save_file(fixture_file, "fixture")
+#         prev_path = save_file(previous_delivery_file, "prev")
+#         bsr_path = save_file(bsr_file, "bsr")
+
+#         print("📁 Files saved")
+
+#         # ---------------- LOAD ADAPT ----------------
+#         try:
+#             df = pd.read_excel(adapt_path, sheet_name="mm - detailed")
+#         except:
+#             df = pd.read_excel(adapt_path)
+
+#         df.columns = df.columns.str.strip()
+#         print("✅ Adapt loaded:", df.shape)
+
+#         # ---------------- LOAD OPTIONAL FILES ----------------
+#         fixture_df = None
+#         if fixture_path:
+#             fixture_df = pd.read_excel(fixture_path)
+#             fixture_df.columns = fixture_df.columns.str.strip()
+
+#         previous_delivery_df = None
+#         if prev_path:
+#             previous_delivery_df = pd.read_excel(prev_path)
+#             previous_delivery_df.columns = previous_delivery_df.columns.str.strip()
+
+#         bsr_df = None
+#         if bsr_path:
+#             try:
+#                 bsr_df = pd.read_excel(bsr_path, sheet_name="Database", header=5)
+#             except:
+#                 bsr_df = pd.read_excel(bsr_path, header=5)
+
+#             bsr_df.columns = bsr_df.columns.str.strip()
+
+#         # ---------------- RUN CHECKS ----------------
+#         print("⚙️ Running checks...")
+
+#         range_df = None
+#         prev_range_df = None
+
+#         if "duplicate_aid_final" in checks:
+#             df = duplicate_aid_final(df)
+
+#         if "audience_spotprice_check" in checks:
+#             df = audience_spotprice_check(df)
+
+#         if "program_category_check_mm" in checks:
+#             df = program_category_check_mm(df)
+
+#         if "ea_creation_check" in checks:
+#             df = ea_creation_check(df)
+
+#         if "channel_country_mapping_check" in checks:
+#             if not rosco_path:
+#                 raise HTTPException(400, "ROSCO file required for channel mapping")
+#             df = channel_country_mapping_check(df, rosco_path)
+
+#         if "ps_market_channel_check" in checks or "ps_content_check" in checks:
+#             if not rosco_path:
+#                 raise HTTPException(400, "ROSCO required")
+
+#             monitoring_df = pd.read_excel(rosco_path, sheet_name="Monitoring List")
+
+#             if "ps_market_channel_check" in checks:
+#                 df = ps_market_channel_check(df, monitoring_df)
+
+#             if "ps_content_check" in checks:
+#                 df = ps_content_check(df, monitoring_df)
+
+#         if "mm_bsr_consistency_check" in checks:
+#             if bsr_df is None:
+#                 raise HTTPException(400, "BSR file required")
+#             df = mm_bsr_consistency_check(df, bsr_df)
+
+#         if "audience_spot_range_clean_view" in checks:
+#             range_df = audience_spot_range_clean_view(df)
+
+#         if "previous_delivery_check" in checks:
+#             if previous_delivery_df is None:
+#                 raise HTTPException(400, "Previous delivery file required")
+#             prev_range_df = previous_delivery_check(df, previous_delivery_df)
+
+#         if "season_monitoring_check" in checks:
+#             if not start_date or not end_date:
+#                 raise HTTPException(400, "Start and End date required")
+#             df = season_monitoring_check(df, start_date, end_date)
+
+#         if "fixture_validation_check" in checks:
+#             if fixture_df is None:
+#                 raise HTTPException(400, "Fixture file required")
+#             df = fixture_validation_check(df, fixture_df)
+
+#         if "apt_bt_check" in checks:
+#             df = apt_bt_check(df, bt_threshold)
+
+#         if "stadium_consistency_check" in checks:
+#             df = stadium_consistency_check(df)
+
+#         if "event_quality_check" in checks:
+#             df = event_quality_check(df)
+
+#         if "home_market_check" in checks:
+#             df = home_market_check(df)
+
+#         print("✅ All checks completed")
+
+#         # ---------------- OUTPUT ----------------
+#         output_path = os.path.join(OUTPUT_FOLDER, f"MM_BSA_QC_{int(time.time())}.xlsx")
+
+#         with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+#             df.to_excel(writer, sheet_name="MM_QC_Output", index=False)
+
+#             if range_df is not None and not range_df.empty:
+#                 range_df.to_excel(writer, sheet_name="Audience_Range_Check", index=False)
+
+#             if prev_range_df is not None and not prev_range_df.empty:
+#                 prev_range_df.to_excel(writer, sheet_name="Previous_Delivery_Check", index=False)
+
+#         print("📄 Output generated:", output_path)
+
+#         return FileResponse(
+#             output_path,
+#             filename="MM_BSA_QC_Output.xlsx",
+#             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+#         )
+
+#     except HTTPException as e:
+#         print("❌ USER ERROR:", e.detail)
+#         raise e
+
+#     except Exception as e:
+#         traceback.print_exc()
+#         print("❌ SYSTEM ERROR:", str(e))
+#         return JSONResponse(
+#             status_code=500,
+#             content={"detail": f"Backend crashed: {str(e)}"}
+#         )
+
 @qc_router.post("/run-mm-bsa-qc")
 async def run_mm_bsa_qc(
     adapt_file: UploadFile = File(...),
@@ -1327,10 +1564,17 @@ async def run_mm_bsa_qc(
     selected_checks: str = Form(...),
     bt_threshold: Optional[float] = Form(None),
     start_date: Optional[str] = Form(None),
-    end_date: Optional[str] = Form(None)
+    end_date: Optional[str] = Form(None),
+    
+    # 🎯 NEW: Tracking fields
+    rosco_id: str = Form(""),
+    destination_id: str = Form(""),
+    user_name: str = Form(""),
+    db: Session = Depends(get_db)
 ):
+    t_start = time.time()
     try:
-        print("\n🚀 ===== NEW REQUEST =====")
+        print(f"\n🚀 ===== NEW MM CHECK BY {user_name} =====")
 
         # ---------------- PARSE CHECKS ----------------
         try:
@@ -1458,6 +1702,64 @@ async def run_mm_bsa_qc(
 
         print("✅ All checks completed")
 
+        # =====================================================
+        # 🎯 QC SUMMARY FOR DATABASE
+        # =====================================================
+        qc_summary = {}
+        total_errors = 0
+        total_rows = len(df)
+        
+        for col in df.columns:
+            if not str(col).endswith("_OK"):
+                continue
+            try:
+                failed = int(df[col].astype(str).str.upper().isin(["FALSE", "FAILED", "0"]).sum())
+                passed = int(total_rows - failed)
+                rule_name = str(col).replace("_OK", "")
+                
+                qc_summary[rule_name] = {
+                    "Total_Evaluated": int(total_rows),
+                    "Passed": passed,
+                    "Failed": failed,
+                    "NA": 0
+                }
+                total_errors += failed
+            except Exception as qc_err:
+                print(f"Summary generation failed for {col}: {qc_err}")
+
+        # =====================================================
+        # 🎯 DB LOGGING
+        # =====================================================
+        try:
+            # Fallback Rosco ID parsing if manual input is empty
+            extracted_rosco_id = rosco_id
+            if not extracted_rosco_id and adapt_file:
+                id_match = re.search(r"#(\d+)", adapt_file.filename)
+                extracted_rosco_id = str(id_match.group(1)).strip()[:100] if id_match else "Unknown"
+            
+            run_duration = round(time.time() - t_start, 2)
+            
+            new_record = RoscoSubmission(
+                rosco_id=extracted_rosco_id,
+                project_name="MM Check", # 🎯 Identifies project type as MM
+                manual_rosco_id=rosco_id,
+                destination_id=destination_id,
+                user_name=user_name,
+                run_duration=run_duration,
+                error_count=total_errors,
+                qc_summary=qc_summary,
+                original_filename=adapt_file.filename if adapt_file else "Unknown",
+                qc_type="MM Check" # 🎯 Safely flags it as an MM check for the frontend
+            )
+            
+            db.add(new_record)
+            db.commit()
+            db.refresh(new_record)
+            print("✅ DB Save Successful - Added to MM Action Center Pipeline")
+        except Exception as db_err:
+            db.rollback()
+            print(f"❌ DB SAVE FAILED: {db_err}")
+
         # ---------------- OUTPUT ----------------
         output_path = os.path.join(OUTPUT_FOLDER, f"MM_BSA_QC_{int(time.time())}.xlsx")
 
@@ -1500,10 +1802,17 @@ async def run_mm_exclusive_qc(
     selected_checks: str = Form(...),
     bt_threshold: Optional[float] = Form(None),
     start_date: Optional[str] = Form(None),
-    end_date: Optional[str] = Form(None)
+    end_date: Optional[str] = Form(None),
+    
+    # 🎯 NEW: Tracking fields and Database Session
+    rosco_id: str = Form(""),
+    destination_id: str = Form(""),
+    user_name: str = Form(""),
+    db: Session = Depends(get_db)
 ):
+    t_start = time.time()
     try:
-        print("\n🚀 ===== OPS MM EXCLUSIVE REQUEST =====")
+        print(f"\n🚀 ===== OPS MM EXCLUSIVE REQUEST BY {user_name} =====")
 
         try:
             checks = json.loads(selected_checks)
@@ -1614,6 +1923,65 @@ async def run_mm_exclusive_qc(
 
         print("✅ OPS checks completed")
 
+        # =====================================================
+        # 🎯 QC SUMMARY FOR DATABASE
+        # =====================================================
+        qc_summary = {}
+        total_errors = 0
+        total_rows = len(df)
+        
+        for col in df.columns:
+            if not str(col).endswith("_OK"):
+                continue
+            try:
+                failed = int(df[col].astype(str).str.upper().isin(["FALSE", "FAILED", "0"]).sum())
+                passed = int(total_rows - failed)
+                rule_name = str(col).replace("_OK", "")
+                
+                qc_summary[rule_name] = {
+                    "Total_Evaluated": int(total_rows),
+                    "Passed": passed,
+                    "Failed": failed,
+                    "NA": 0
+                }
+                total_errors += failed
+            except Exception as qc_err:
+                print(f"Summary generation failed for {col}: {qc_err}")
+
+        # =====================================================
+        # 🎯 DB LOGGING
+        # =====================================================
+        try:
+            # Fallback Rosco ID parsing if manual input is empty
+            extracted_rosco_id = rosco_id
+            if not extracted_rosco_id and adapt_file:
+                id_match = re.search(r"#(\d+)", adapt_file.filename)
+                extracted_rosco_id = str(id_match.group(1)).strip()[:100] if id_match else "Unknown"
+            
+            run_duration = round(time.time() - t_start, 2)
+            
+            new_record = RoscoSubmission(
+                rosco_id=extracted_rosco_id,
+                project_name="MM Exclusive",
+                manual_rosco_id=rosco_id,
+                destination_id=destination_id,
+                user_name=user_name,
+                run_duration=run_duration,
+                error_count=total_errors,
+                qc_summary=qc_summary,
+                original_filename=adapt_file.filename if adapt_file else "Unknown",
+                qc_type="MM Exclusive" # 🎯 Identifies as MM Exclusive in Action Center
+            )
+            
+            db.add(new_record)
+            db.commit()
+            db.refresh(new_record)
+            print("✅ DB Save Successful - Added to Action Center Pipeline")
+        except Exception as db_err:
+            db.rollback()
+            print(f"❌ DB SAVE FAILED: {db_err}")
+
+        # ---------------- OUTPUT ----------------
         output_path = os.path.join(
             OUTPUT_FOLDER,
             f"OPS_MM_QC_{int(time.time())}.xlsx"
@@ -2033,6 +2401,30 @@ async def calculate_intl_audit(
         media_type="text/event-stream"
     )
 
+@qc_router.post("/calculate_intl_final_audit_2")
+async def calculate_intl_audit(
+    intl_data: UploadFile = File(...), 
+    cpm_file: UploadFile = File(...),    
+    euro_file: UploadFile = File(...),
+    sport_genre: str = Form(...),      # Captures the Sport Genre from Frontend
+    spot_fixture: str = Form(...)      # Captures the Spot Rate from Frontend
+):
+    """
+    Endpoint to process the International Audit.
+    Streams progress logs and returns a base64 encoded Excel file.
+    """
+    return StreamingResponse(
+        process_intl_audit_logic_stream_2(
+            intl_data,  
+            cpm_file, 
+            euro_file,
+            sport_genre,               # Pass it into the logic stream
+            spot_fixture,              # Pass it into the logic stream
+            UPLOAD_FOLDER
+        ),
+        media_type="text/event-stream"
+    )
+
 # -------------------- 🌍 F1 MARKET CHECK ENDPOINT --------------------
 
 EPL_CHECK_KEYS = {
@@ -2233,7 +2625,8 @@ def market_check_and_process(
                 run_duration=round(run_duration, 2),
                 error_count=total_absolute_errors,
                 qc_summary=qc_summary_db,
-                original_filename=bsr_file.filename
+                original_filename=bsr_file.filename,
+                qc_type=project_name or "Sports Specific QC"
             )
             db.add(db_record)
             db.commit()

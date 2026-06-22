@@ -267,7 +267,7 @@
 #         if pd.isna(text):
 #             return ""
 #         return re.sub(r"\s+", " ", str(text).strip().lower())
-    
+   
 #     def normalize_team(team):
 #         team = re.sub(r"\(.*?\)","", str(team))
 #         return clean_text(team)
@@ -813,7 +813,7 @@ def home_away_vs_phase_check(df, col_map):
         if pd.isna(text):
             return ""
         return re.sub(r"\s+", " ", str(text).strip().lower())
-    
+   
     def normalize_team(team):
         team = re.sub(r"\(.*?\)","", str(team))
         return clean_text(team)
@@ -1086,3 +1086,80 @@ def multiple_live_match_check(df, col_map):
     df.loc[~live_mask, result_col] = "Not Applicable"
 
     return df
+
+import os
+
+def _norm(val):
+    """Standardizes string values for safe matching."""
+    if pd.isna(val) or val is None:
+        return ""
+    return str(val).strip().lower()
+
+def _find_column(df, target_names):
+    """
+    Robust column finder that looks for partial or exact matches
+    against a list or string of target names.
+    """
+    if not target_names:
+        return None
+    if isinstance(target_names, str):
+        target_names = [target_names]
+       
+    columns = df.columns.tolist()
+    target_names_clean = [str(n).strip().lower() for n in target_names]
+   
+    for col in columns:
+        col_clean = str(col).strip().lower()
+        for target in target_names_clean:
+            if target in col_clean:
+                return col
+    return None
+
+def auto_detect_individual_sport(bsr_path, df, rules, file_rules):
+    """
+    Scans configurations, filenames, and internal Excel metadata blocks
+    to automatically flag individual/non-team sports that do not require fixtures.
+    """
+    # 1. Check explicit overrides first
+    if rules.get("fixtures_not_required") or file_rules.get("fixtures_not_required"):
+        return True
+
+    # Master list of individual/non-team sport keywords and abbreviations
+    individual_sport_keywords = {
+        # Motorsports
+        "motor", "motorsport", "formula", "f1", "moto", "nascar", "race", "gp", "motogp",
+        # Athletics / Track and Field
+        "athletic", "track", "field", "olympics", "paralympics",
+        # Other Individual / Non-Team Sports
+        "golf", "cyclocross", "winter sports", "surfing", "cycling",
+        "badminton", "horse racing", "equitation", "judo", "trail running",
+        "mma", "skating", "tennis", "canoe", "sailing", "running",
+        "boxing", "fencing", "swimming", "biathlon", "marthon", "marathon",
+        "dart", "wrestling", "table tennis", "hrc"
+    }
+
+    # Strategy A: Check configuration from Rosco Summary Sheet
+    configured_sport = _norm(file_rules.get("sport") or rules.get("sport") or "")
+    if configured_sport and any(kw in configured_sport for kw in individual_sport_keywords):
+        logging.info(f"🎯 Sport detected from Rosco Configuration: '{configured_sport}'")
+        return True
+
+    # Strategy B: Check the file name string
+    path_lower = _norm(os.path.basename(bsr_path) if bsr_path else "")
+    if path_lower and any(kw in path_lower for kw in individual_sport_keywords):
+        logging.info(f"🎯 Sport detected from BSR Filename analysis.")
+        return True
+
+    # Strategy C: Read top 10 metadata header cells inside the BSR Excel Sheet
+    try:
+        if bsr_path and str(bsr_path).lower().endswith(('.xlsx', '.xls', '.xlsm')):
+            metadata_df = pd.read_excel(bsr_path, nrows=10, header=None)
+            combined_text = " ".join(metadata_df.astype(str).values.flatten()).lower()
+            if any(kw in combined_text for kw in individual_sport_keywords):
+                logging.info("🎯 Sport detected from internal BSR header metadata cells.")
+                return True
+    except Exception as e:
+        logging.debug(f"Metadata block parse skipped: {e}")
+
+    return False
+

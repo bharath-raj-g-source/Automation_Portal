@@ -48,6 +48,7 @@ class RoscoSubmission(Base):
     user_name = Column(String(255), nullable=True)             # From frontend text input
     
     # --- ANALYTICS DATA ---
+    qc_type = Column(String(50), nullable=True, default="") # 🎯 NEW COLUMN
     run_duration = Column(Float, nullable=True)
     error_count = Column(Integer, nullable=True)
     qc_summary = Column(JSON, nullable=True)
