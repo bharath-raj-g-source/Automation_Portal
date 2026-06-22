@@ -635,9 +635,31 @@ const response = await fetch(`${API_BASE}/qc/early-warning/reconcile-rosco`, {
           return parseDate(a) - parseDate(b);
         });
 
+        let dynamicLatestRefreshLabel = "Pending Sync";
+
         if (validDates.length > 0) {
           // Rule 4: Critical Default 30-Day Window Applied Here based on max date index
-          const resolvedEnd = (() => { const p = validDates[validDates.length - 1].split("-"); return p.length === 3 ? new Date(parseInt(p[2]), parseInt(p[1]) - 1, parseInt(p[0])) : new Date(); })();
+          const maxDateStr = validDates[validDates.length - 1]; // e.g., "15-06-2026"
+          const p = maxDateStr.split("-");
+          
+          if (p.length === 3) {
+            const dayInt = parseInt(p[0]);
+            const monthInt = parseInt(p[1]) - 1;
+            const fullYear = p[2];
+            
+            const monthsList = ["Jun", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            const monthText = monthsList[monthInt] || p[1];
+            
+            // Generate standard short-ordinal string markers
+            const suffix = (dayInt % 10 === 1 && dayInt !== 11) ? "st" 
+                         : (dayInt % 10 === 2 && dayInt !== 12) ? "nd" 
+                         : (dayInt % 10 === 3 && dayInt !== 13) ? "rd" 
+                         : "th";
+                         
+            dynamicLatestRefreshLabel = `${String(dayInt).padStart(2, '0')}${suffix} ${monthText} ${fullYear}`;
+          }
+
+          const resolvedEnd = p.length === 3 ? new Date(parseInt(p[2]), parseInt(p[1]) - 1, parseInt(p[0])) : new Date();
           const computedLookbackStart = new Date(resolvedEnd); computedLookbackStart.setDate(resolvedEnd.getDate() - 30);
           if (!startDate) setStartDate(computedLookbackStart);
           if (!endDate) setEndDate(resolvedEnd);
@@ -646,9 +668,17 @@ const response = await fetch(`${API_BASE}/qc/early-warning/reconcile-rosco`, {
         const formattedRange = validDates.length > 0 ? `${validDates[0]} to ${validDates[validDates.length - 1]}` : "No dates localized";
 
         setDataState({
-          status: "ONLINE", fileName: payload.last_refreshed_file || "Consolidated_BSA_Report.xlsx", extractedFileDate: "01st Jun 2026", driveId: "1kXZ3J5OV97T9C5SJNCnU33J91vyepiux",
-          dateRange: formattedRange, errorMessage: "", responseTimeMs: elapsedMs,
-          rawBsaRows: bsaRows, rawDateColumns: validDates, rawMandatoryAudit: mandatoryAudit, rawAuraAudit: auraAudit
+          status: "ONLINE", 
+          fileName: payload.last_refreshed_file || "Consolidated_BSA_Report.xlsx", 
+          extractedFileDate: dynamicLatestRefreshLabel, 
+          driveId: "1kXZ3J5OV97T9C5SJNCnU33J91vyepiux",
+          dateRange: formattedRange, 
+          errorMessage: "", 
+          responseTimeMs: elapsedMs,
+          rawBsaRows: bsaRows, 
+          rawDateColumns: validDates, 
+          rawMandatoryAudit: mandatoryAudit, 
+          rawAuraAudit: auraAudit
         });
       }
     } catch (error: any) { 

@@ -758,7 +758,6 @@
 // };
 
 // export default ListView;
-
 "use client";
 
 import React, { useState, useEffect } from "react";
@@ -774,9 +773,7 @@ import { DataGrid, GridColDef } from "@mui/x-data-grid";
 
 import {
   useRunQcChecksMutation,
-  // START OF LEAGUE MODIFICATION: Imported runQcChecks1 hook from the api definition tier
   useRunQcChecks1Mutation,
-  // END OF LEAGUE MODIFICATION: Imported runQcChecks1 hook from the api definition tier
   useRunMarketChecksMutation,
   useGetProjectsQuery,
   useGetAuthUserQuery,
@@ -928,7 +925,6 @@ const ListView = ({ id, setIsModalNewTaskOpen }: ListViewProps) => {
   const { data: projects } = useGetProjectsQuery();
   const { data: authData } = useGetAuthUserQuery();
  
-  // START OF LEAGUE MODIFICATION: Local array fallback strategy protects active state during asynchronous loading gaps
   const localProjectsFallback = [
     { id: 1, name: "EPL" },
     { id: 2, name: "Formula 1" },
@@ -940,7 +936,6 @@ const ListView = ({ id, setIsModalNewTaskOpen }: ListViewProps) => {
 
   const currentProject = projects?.find((p) => p.id === Number(id)) || localProjectsFallback.find((p) => p.id === Number(id));
   const projectName = currentProject?.name || "";
-  // END OF LEAGUE MODIFICATION: Local array fallback strategy protects active state during asynchronous loading gaps
 
   const userName = authData?.user?.username || "Unknown User";
 
@@ -1000,12 +995,9 @@ const ListView = ({ id, setIsModalNewTaskOpen }: ListViewProps) => {
 
   const [runStandardQc, { isLoading: isStandardLoading, data: standardData, error: standardError, isSuccess: isStandardSuccess }] = useRunQcChecksMutation();
   const [runMarketQc, { isLoading: isMarketLoading, data: marketData, error: marketError, isSuccess: isMarketSuccess }] = useRunMarketChecksMutation();
- 
-  // START OF LEAGUE MODIFICATION: Integrated runQcChecks1 hook mutation to handle automated binary downloads
   const [runQcChecks1, { isLoading: isStreamLoading }] = useRunQcChecks1Mutation();
 
   const isLoading = isStandardLoading || isMarketLoading || isStreamLoading;
-  // END OF LEAGUE MODIFICATION: Integrated runQcChecks1 hook mutation to handle automated binary downloads
 
   const isSuccess = isStandardSuccess || isMarketSuccess;
   const error = standardError || marketError;
@@ -1021,7 +1013,6 @@ const ListView = ({ id, setIsModalNewTaskOpen }: ListViewProps) => {
 
   const isDarkMode = useAppSelector((state) => state.global.isDarkMode);
  
-  // START OF LEAGUE MODIFICATION: Enforces all date metrics parameters are completed to safely run target leagues
   const isDirectStreamLeague = ["Laliga", "LaLiga", "Middle East Projects"].includes(projectName);
   const isSerieA = projectName === "Serie A";
 
@@ -1030,7 +1021,6 @@ const ListView = ({ id, setIsModalNewTaskOpen }: ListViewProps) => {
     : isMarketProject
       ? (!!selectedBSRFile && selectedChecks.length > 0 && manualRoscoId.trim().length > 0)
       : (!!selectedBSRFile && !!selectedRoscoFile && manualRoscoId.trim().length > 0);
-  // END OF LEAGUE MODIFICATION: Enforces all date metrics parameters are completed to safely run target leagues
    
   const combinedStatus = isLoading ? 'loading' : processStatus === 'complete' ? 'complete' : localError ? 'error' : 'idle';
 
@@ -1080,27 +1070,22 @@ const ListView = ({ id, setIsModalNewTaskOpen }: ListViewProps) => {
    
     const formData = new FormData();
    
-    // ==================== START OF CHANGE ====================
+    // 🎯 NEW: Globally appending Tracking and Date IDs for ALL paths
+    formData.append('rosco_id', manualRoscoId.trim());
+    formData.append('destination_id', destinationId.trim());
+    formData.append('user_name', userName);
+    formData.append('start_date', monitoringStartDate);
+    formData.append('end_date', monitoringEndDate);
+    formData.append('project_name', projectName);
+
     if (isDirectStreamLeague) {
         try {
-            // Explicitly map files to the parameter names expected by your backend signature
             formData.append('rosco_file', selectedRoscoFile as File);
             formData.append('bsr_file', selectedBSRFile as File);
 
-            // Map frontend date states to the exact required string parameters expected by FastAPI
-            formData.append('start_date', monitoringStartDate);
-            formData.append('end_date', monitoringEndDate);
-
-            // Map text identity parameters to their respective backend field mappings
-            formData.append('rosco_id', manualRoscoId.trim());
-            formData.append('destination_id', destinationId.trim());
-            formData.append('user_name', userName);
-
-            // Add matching program category processing tolerances with fallback variables
             formData.append('live_tolerance_min', '60');
             formData.append('highlight_tolerance_min', '0');
 
-            // Calls the native build.mutation configuration endpoint from api.ts
             const fileBlob = await runQcChecks1(formData).unwrap();
             const localObjectURL = window.URL.createObjectURL(fileBlob as unknown as Blob);
 
@@ -1113,7 +1098,7 @@ const ListView = ({ id, setIsModalNewTaskOpen }: ListViewProps) => {
         }
         return;
     }
-    // ==================== END OF CHANGE ====================
+
     try {
         if (isMarketProject) {
             formData.append('bsr_file', selectedBSRFile as File);
@@ -1121,12 +1106,14 @@ const ListView = ({ id, setIsModalNewTaskOpen }: ListViewProps) => {
             if (selectedDataFile) formData.append('overnight_file', selectedDataFile);
             selectedChecks.forEach(checkKey => formData.append('checks', checkKey));
             formData.append('check_configs', JSON.stringify({}));
+            
             await runMarketQc(formData).unwrap();
         } else {
             formData.append('bsr_file', selectedBSRFile as File);
             formData.append('rosco_file', selectedRoscoFile as File);
             if (selectedDataFile) formData.append('data_file', selectedDataFile);
             selectedChecks.forEach(checkKey => formData.append('checks', checkKey));
+            
             await runStandardQc(formData).unwrap();
         }
     } catch (err) { console.error(err); }
@@ -1135,7 +1122,6 @@ const ListView = ({ id, setIsModalNewTaskOpen }: ListViewProps) => {
   const handleDownload = () => {
     if (!qcResultMeta) return;
    
-    // START OF LEAGUE MODIFICATION: Captures and handles anchor downloads securely for data blobs
     if (qcResultMeta.url.startsWith('blob:')) {
         const temporaryLink = document.createElement('a');
         temporaryLink.href = qcResultMeta.url;
@@ -1145,7 +1131,6 @@ const ListView = ({ id, setIsModalNewTaskOpen }: ListViewProps) => {
         document.body.removeChild(temporaryLink);
         return;
     }
-    // END OF LEAGUE MODIFICATION: Captures and handles anchor downloads securely for data blobs
 
     const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
     const cleanBase = baseUrl?.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
@@ -1155,7 +1140,7 @@ const ListView = ({ id, setIsModalNewTaskOpen }: ListViewProps) => {
 
   return (
     <div className="h-screen w-full bg-[#F8FAFC] dark:bg-[#050505] text-slate-900 dark:text-slate-100 flex flex-col overflow-hidden transition-colors duration-300">
-     
+      
       {/* 1. HEADER */}
       <header className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0B0F1A] flex items-center justify-between shrink-0 z-10 shadow-sm">
         <div className="flex items-center gap-4">
@@ -1254,7 +1239,7 @@ const ListView = ({ id, setIsModalNewTaskOpen }: ListViewProps) => {
 
         {/* RIGHT PANEL: METADATA & DATA DROPZONES */}
         <div className="flex-1 flex flex-col gap-6 min-w-0">
-         
+          
           {/* PAYLOAD CONFIGURATION */}
           <div className="bg-white dark:bg-[#0F131F] border border-slate-200 dark:border-slate-800 rounded-3xl p-5 shadow-sm shrink-0 flex flex-col">
             <h3 className="text-xs font-black uppercase tracking-widest text-slate-500 mb-4 flex items-center gap-2">
@@ -1327,10 +1312,10 @@ const ListView = ({ id, setIsModalNewTaskOpen }: ListViewProps) => {
                 </div>
               </div>
             </div>
-           
+            
             {/* DROPZONES ROW */}
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 h-full">
-             
+              
               {/* BSR Dropzone */}
               <label className={`flex flex-col items-center justify-center p-3 border-2 border-dashed rounded-2xl cursor-pointer transition-all text-center h-28 min-w-0 overflow-hidden
                 ${selectedBSRFile ? 'bg-blue-50 border-blue-400 dark:bg-blue-500/10 dark:border-blue-500/50' : 'bg-slate-50 dark:bg-[#0B0F1A] border-slate-300 dark:border-slate-700 hover:border-blue-400'}`}>
@@ -1432,7 +1417,7 @@ const ListView = ({ id, setIsModalNewTaskOpen }: ListViewProps) => {
                 </button>
               )}
             </div>
-           
+            
             <div className="flex-1 overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800">
               {combinedStatus !== 'idle' && !localError ? (
                 <DataGrid

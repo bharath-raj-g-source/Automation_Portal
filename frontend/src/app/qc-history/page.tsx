@@ -129,7 +129,7 @@ const QcHistoryDashboard = () => {
   // --- DYNAMIC DATA & SMART ANALYTICS ENGINE ---
   const { 
     kpis, chartData, globalRuleStats, 
-    deliveryRiskData, actionCenterDeliveries
+    deliveryRiskData, actionCenterDeliveries, isDbMode
   } = useMemo(() : any => {
     
     const rawHistory = historyData.map((row: any) => ({ ...row }));
@@ -137,6 +137,7 @@ const QcHistoryDashboard = () => {
     const unfilteredLatestRuns: Record<string, any> = {};
     const unfilteredRunCounts: Record<string, number> = {};
     const unfilteredGroupsMap: Record<string, any> = {}; 
+    const allDbGroups: any[] = []; 
 
     const rawGroupMap: Record<string, any[]> = {};
     rawHistory.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()).forEach((row: any) => {
@@ -162,13 +163,15 @@ const QcHistoryDashboard = () => {
       if (evals === 0 && latestRun.error_count > 0) errRate = 100;
       latestRun._computedErrorRate = errRate;
 
-      // 🎯 STAT OBJ WITH QC TYPE
+      // 🎯 SMART FALLBACK: If Alembic didn't push qc_type, fallback to project_name
+     const smartQcType = (latestRun.qc_type || (latestRun.project_name === "MM Check" ? "MM.QC" : "GEN.QC")).replace("MM Check", "MM.QC").replace("MM Exclusive", "MM.E.QC").replace("General QC", "GEN.QC").replace("Middle East Projects", "ME.QC");
+
       const statObj = {
         isClean: latestRun.error_count === 0,
         errorCount: latestRun.error_count,
         errorRate: errRate,
         user_name: latestRun.user_name,
-        qc_type: latestRun.qc_type || "Gen.QC" // Default fallback
+        qc_type: smartQcType 
       };
 
       const allFailedRules = new Set<string>();
@@ -211,6 +214,8 @@ const QcHistoryDashboard = () => {
         latestRun, allRuns: runs, totalRuns: runs.length,
         overallFixed, overallBroken, allFailedRules: Array.from(allFailedRules)
       };
+
+      allDbGroups.push(fullGroupData); // 🎯 Collect EVERY DB group here
 
       if (destId) {
         unfilteredLatestRuns[`dest_${destId}`] = statObj;
@@ -327,13 +332,15 @@ const QcHistoryDashboard = () => {
       isAnomaly: (row.run_duration > avgDuration * 2 && row.run_duration > 15) || ((row._computedErrorRate || 0) > 25)
     }));
 
-    // 🎯 DELIVERY PIPELINE & ACTION CENTER MAPPER
+    // 🎯 SMART AUTO-FALLBACK DETECTOR
+    const effectiveDbMode = dataSource === "db" || deliveryData.length === 0;
+
     let pipelineList: any[] = [];
     const { startOfWeek, endOfWeek } = getWeekRange(weekOffset); 
 
-    // 🛑 FAILSAFE: DB ONLY GENERATION
-    if (dataSource === "db") {
-      Object.values(unfilteredGroupsMap).forEach(group => {
+    if (effectiveDbMode) {
+      // 🛑 DB ONLY GENERATION (Uses allDbGroups to catch EVERYTHING)
+      allDbGroups.forEach(group => {
         const runDate = new Date(group.latestRun.created_at);
         const runTime = runDate.getTime();
         
@@ -346,17 +353,20 @@ const QcHistoryDashboard = () => {
           if (runTime < new Date(globalStartDate).getTime()) includeRecord = false;
         } else if (globalEndDate) {
           if (runTime > new Date(globalEndDate).getTime() + 86400000) includeRecord = false;
-        }
+        }   
 
         if (includeRecord) {
+          const smartQcType = (group.latestRun.qc_type || (group.latestRun.project_name === "MM Check" ? "MM.QC" : "GEN.QC")).replace("MM Check", "MM.QC").replace("MM Exclusive", "MM.E.QC").replace("General QC", "GEN.QC").replace("Middle East Projects", "ME.QC");
+
           pipelineList.push({
-            original_delivery_date: runDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-'),
+            original_delivery_date: "--",
+            _display_date: runDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-'),
             _rawDateMs: runTime,
-            delivery_uid: group.destination_id,
+            delivery_uid: group.destination_id || "--",
             tracking_id: group.id,
-            client_account: group.project_name,
+            client_account: group.project_name || "--",
             user_name: group.user_name,
-            qc_type: group.latestRun.qc_type || "General QC", // 🎯 Map DB Type
+            qc_type: smartQcType, // 🎯 Applies smart DB type
             qc_status: group.latestRun.error_count === 0 ? "Clean" : "Failing",
             total_qc_runs: group.totalRuns,
             final_error_rate: group.latestRun._computedErrorRate,
@@ -365,7 +375,7 @@ const QcHistoryDashboard = () => {
           });
         }
       });
-      pipelineList.sort((a, b) => a._rawDateMs - b._rawDateMs);
+      pipelineList.sort((a, b) => b._rawDateMs - a._rawDateMs);
 
     } else {
       // 🟢 PRIMARY: GOOGLE SHEETS MERGED GENERATION
@@ -402,7 +412,7 @@ const QcHistoryDashboard = () => {
           final_error_rate: hStats ? hStats.errorRate : null,
           error_count: hStats ? hStats.errorCount : null,
           user_name: hStats ? hStats.user_name : "Pending",
-          qc_type: hStats ? hStats.qc_type : "N/A", // 🎯 Map DB Type to Sheet row
+          qc_type: hStats ? hStats.qc_type : "N/A", 
           groupData
         });
       });
@@ -412,8 +422,8 @@ const QcHistoryDashboard = () => {
     const mappedRiskData = pipelineList.map((d: any) => {
       const plotErrorRate = d.qc_status === "Not Run" ? -15 : (d.final_error_rate || 0);
       return {
-        date: d.original_delivery_date,
-        originalDate: d.original_delivery_date,
+        date: effectiveDbMode ? d._display_date : d.original_delivery_date,
+        originalDate: effectiveDbMode ? d._display_date : d.original_delivery_date,
         roscoId: d.tracking_id,
         deliveryId: d.delivery_uid,
         projectName: d.client_account,
@@ -426,7 +436,7 @@ const QcHistoryDashboard = () => {
     });
 
     let actionCenterDeliveries = pipelineList.filter(d => {
-      const dDate = dataSource === "db" ? d._rawDateMs : new Date(d.original_delivery_date).getTime();
+      const dDate = effectiveDbMode ? d._rawDateMs : new Date(d.original_delivery_date).getTime();
       return dDate >= startOfWeek.getTime() && dDate <= endOfWeek.getTime();
     });
 
@@ -436,7 +446,8 @@ const QcHistoryDashboard = () => {
       const uName = (d.user_name || "").toLowerCase();
       
       const matchRosco = searchRosco === "" || rId.includes(searchRosco.toLowerCase());
-      const matchDelivery = searchDelivery === "" || dId.includes(searchDelivery.toLowerCase());
+      // 🎯 THE GHOST FILTER FIX: Ignore Delivery search in DB mode
+      const matchDelivery = effectiveDbMode || searchDelivery === "" || dId.includes(searchDelivery.toLowerCase()); 
       const matchUser = searchUser === "" || uName.includes(searchUser.toLowerCase());
 
       return matchRosco && matchDelivery && matchUser;
@@ -469,6 +480,7 @@ const QcHistoryDashboard = () => {
       chartData: { trendTimeline, projectErrors, topFailedRules, scatterData, topUsers, densityDistData },
       deliveryRiskData: mappedRiskData,
       actionCenterDeliveries, 
+      isDbMode: effectiveDbMode, 
       globalRuleStats: ruleStats
     };
   }, [historyData, deliveryData, searchRosco, searchDelivery, searchUser, filterStatus, globalStartDate, globalEndDate, weekOffset, dataSource]);
@@ -554,10 +566,10 @@ const QcHistoryDashboard = () => {
       return (
         <div className="bg-[#111623] border border-indigo-500/30 p-4 rounded-xl shadow-2xl z-50 min-w-[240px] animate-in zoom-in-95">
           <div className="border-b border-slate-700/60 pb-3 mb-3">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-indigo-400 mb-1.5 flex items-center gap-1"><Calendar size={10}/> Due: {data.originalDate}</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-indigo-400 mb-1.5 flex items-center gap-1"><Calendar size={10}/> {isDbMode ? 'Run Date:' : 'Due:'} {data.originalDate}</p>
             <p className="text-base font-black text-white flex items-center gap-1"><Hash size={14}/> {data.roscoId}</p>
             <p className="text-xs font-bold text-slate-400 truncate max-w-[240px]">{data.projectName || "Unknown Project"}</p>
-            {data.deliveryId && <p className="text-[10px] text-slate-500 font-mono mt-1">Delivery ID: {data.deliveryId}</p>}
+            {!isDbMode && data.deliveryId && <p className="text-[10px] text-slate-500 font-mono mt-1">Delivery ID: {data.deliveryId}</p>}
           </div>
 
           {data.status === 'Not Run' ? (
@@ -587,7 +599,7 @@ const QcHistoryDashboard = () => {
   if (historyLoading || deliveryLoading) return <div className="flex items-center justify-center h-screen bg-[#F9FBFC] dark:bg-[#08090A]"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div></div>;
   if (historyError) return <div className="flex items-center justify-center h-screen bg-[#F9FBFC] dark:bg-[#08090A] text-red-500 font-medium">Failed to load QC History.</div>;
 
-  return (
+return (
     <div className="min-h-screen bg-[#F9FBFC] dark:bg-[#08090A] p-4 lg:p-8 text-slate-900 dark:text-slate-100 transition-colors duration-300 relative flex flex-col gap-6 overflow-x-hidden">
       
       {/* --- DETAILED ANALYSIS MODAL --- */}
@@ -827,7 +839,7 @@ const QcHistoryDashboard = () => {
         ))}
       </div>
 
-      {/* 🎯 NEW: SUPER ACTION CENTER DASHBOARD */}
+      {/* 🎯 SUPER ACTION CENTER DASHBOARD */}
       {actionCenterDeliveries && (
         <div className="bg-white dark:bg-[#111623] border border-indigo-200 dark:border-indigo-500/30 rounded-xl shadow-sm overflow-hidden flex flex-col animate-in slide-in-from-bottom-10 fade-in duration-700 fill-mode-both">
           
@@ -855,26 +867,32 @@ const QcHistoryDashboard = () => {
                 ))}
               </div>
 
-              {/* 🎯 DATA SOURCE TOGGLE (FAILSAFE) */}
-              <div className="flex items-center gap-1 bg-slate-100 dark:bg-[#0B0F1A] p-1 rounded-full border border-slate-200 dark:border-slate-700/50 sm:ml-2">
-                <button 
-                  onClick={() => setDataSource("merged")}
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold transition-all ${dataSource === "merged" ? 'bg-indigo-500 text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-indigo-500 dark:hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800'}`}
-                  title="Normal Mode: Merges QC Data with Google Sheets delivery dates."
-                >
-                  <Table size={12}/>  Sync
-                </button>
-                <button 
-                  onClick={() => setDataSource("db")}
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold transition-all ${dataSource === "db" ? 'bg-indigo-500 text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-indigo-500 dark:hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800'}`}
-                  title="Failsafe Mode: If Google Sheets disconnects, click here to view raw database records by QC run date."
-                >
-                  <Database size={12}/> DB 
-                </button>
-              </div>
+              {/* 🎯 SMART AUTO-FALLBACK BADGE & DATA SOURCE TOGGLE */}
+              {isDbMode && dataSource === "merged" ? (
+                <span className="flex items-center gap-1.5 px-3 py-1 bg-rose-50 text-rose-600 border border-rose-200 rounded-full text-[10px] font-bold shadow-sm dark:bg-rose-500/10 dark:text-rose-400 dark:border-rose-500/30">
+                  <AlertCircle size={12}/> Sheets Disconnected: Showing DB Runs
+                </span>
+              ) : (
+                <div className="flex items-center gap-1 bg-slate-100 dark:bg-[#0B0F1A] p-1 rounded-full border border-slate-200 dark:border-slate-700/50 sm:ml-2">
+                  <button 
+                    onClick={() => setDataSource("merged")}
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold transition-all ${dataSource === "merged" ? 'bg-indigo-500 text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-indigo-500 dark:hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800'}`}
+                    title="Normal Mode: Merges QC Data with Google Sheets delivery dates."
+                  >
+                    <Table size={12}/> Sync
+                  </button>
+                  <button 
+                    onClick={() => setDataSource("db")}
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold transition-all ${dataSource === "db" ? 'bg-indigo-500 text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-indigo-500 dark:hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800'}`}
+                    title="Failsafe Mode: If Google Sheets disconnects, click here to view raw database records by QC run date."
+                  >
+                    <Database size={12}/> DB 
+                  </button>
+                </div>
+              )}
               
               <span className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest px-2 py-1 bg-white dark:bg-[#0B0F1A] border border-indigo-100 dark:border-indigo-500/30 rounded shadow-sm shrink-0">
-                {actionCenterDeliveries.length} Deliveries Due
+                {actionCenterDeliveries.length} Deliveries
               </span>
             </div>
 
@@ -884,10 +902,12 @@ const QcHistoryDashboard = () => {
                   <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={12} />
                   <input type="text" placeholder="Rosco ID..." value={searchRosco} onChange={(e) => setSearchRosco(e.target.value)} className="w-full bg-white dark:bg-[#0B0F1A] border border-indigo-100 dark:border-slate-700 text-[10px] font-medium rounded-lg pl-7 pr-2 py-2 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all dark:text-white placeholder:text-slate-400" />
                 </div>
-                <div className="relative w-full sm:w-32">
-                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={12} />
-                  <input type="text" placeholder="Delivery ID..." value={searchDelivery} onChange={(e) => setSearchDelivery(e.target.value)} className="w-full bg-white dark:bg-[#0B0F1A] border border-indigo-100 dark:border-slate-700 text-[10px] font-medium rounded-lg pl-7 pr-2 py-2 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all dark:text-white placeholder:text-slate-400" />
-                </div>
+                {!isDbMode && (
+                  <div className="relative w-full sm:w-32">
+                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={12} />
+                    <input type="text" placeholder="Delivery ID..." value={searchDelivery} onChange={(e) => setSearchDelivery(e.target.value)} className="w-full bg-white dark:bg-[#0B0F1A] border border-indigo-100 dark:border-slate-700 text-[10px] font-medium rounded-lg pl-7 pr-2 py-2 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all dark:text-white placeholder:text-slate-400" />
+                  </div>
+                )}
                 <div className="relative w-full sm:w-32">
                   <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={12} />
                   <input type="text" placeholder="User Name..." value={searchUser} onChange={(e) => setSearchUser(e.target.value)} className="w-full bg-white dark:bg-[#0B0F1A] border border-indigo-100 dark:border-slate-700 text-[10px] font-medium rounded-lg pl-7 pr-2 py-2 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all dark:text-white placeholder:text-slate-400" />
@@ -914,9 +934,9 @@ const QcHistoryDashboard = () => {
               <thead>
                 <tr className="bg-slate-50 dark:bg-[#0B0F1A]/80 border-b border-slate-200 dark:border-slate-800/60 text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
                   <th className="px-5 py-3 font-black text-indigo-500">
-                    {dataSource === 'db' ? 'Last Run Date' : 'Target Date'}
+                    {isDbMode ? 'QC Run Date' : 'Target Date'}
                   </th>
-                  <th className="px-5 py-3 font-black">Delivery ID</th>
+                  {!isDbMode && <th className="px-5 py-3 font-black">Delivery ID</th>}
                   <th className="px-5 py-3 font-black">Rosco ID</th>
                   <th className="px-5 py-3 font-black">Project</th>
                   <th className="px-5 py-3 font-black">User</th>
@@ -930,7 +950,7 @@ const QcHistoryDashboard = () => {
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
                 {actionCenterDeliveries.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="px-5 py-10 text-center text-slate-400 text-xs font-medium italic">
+                    <td colSpan={isDbMode ? 9 : 10} className="px-5 py-10 text-center text-slate-400 text-xs font-medium italic">
                       No deliveries match your search filters for this week.
                     </td>
                   </tr>
@@ -963,12 +983,12 @@ const QcHistoryDashboard = () => {
                         <tr key={toggleId} className="hover:bg-slate-50 dark:hover:bg-white/[0.02] transition-colors">
                           <td className="px-5 py-4">
                             <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-indigo-50 dark:bg-indigo-500/10 text-[10px] font-bold text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30">
-                              <Calendar size={10} /> {row.original_delivery_date}
+                              <Calendar size={10} /> {isDbMode ? row._display_date : row.original_delivery_date}
                             </span>
                           </td>
-                          <td className="px-5 py-4"><div className="flex items-center gap-2 text-xs font-mono text-slate-500">{row.delivery_uid || "N/A"}</div></td>
+                          {!isDbMode && <td className="px-5 py-4"><div className="flex items-center gap-2 text-xs font-mono text-slate-500">{row.delivery_uid || "--"}</div></td>}
                           <td className="px-5 py-4"><div className="flex items-center gap-2 text-sm font-black dark:text-white"><Hash size={14} className="text-slate-400"/> {row.tracking_id}</div></td>
-                          <td className="px-5 py-4"><div className="flex items-center gap-2 text-xs font-medium dark:text-slate-200 truncate max-w-[200px]" title={row.client_account}><FolderGit2 size={12} className="text-blue-500 shrink-0"/> {row.client_account || "Unknown"}</div></td>
+                          <td className="px-5 py-4"><div className="flex items-center gap-2 text-xs font-medium dark:text-slate-200 truncate max-w-[200px]" title={row.client_account}><FolderGit2 size={12} className="text-blue-500 shrink-0"/> {row.client_account || "--"}</div></td>
                           <td className="px-5 py-4">
                             <div className="flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300">
                               <User size={12} className="text-slate-400" /> {row.user_name || "Pending"}
@@ -1001,10 +1021,10 @@ const QcHistoryDashboard = () => {
                         >
                           <td className="px-5 py-4">
                             <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-indigo-50 dark:bg-indigo-500/10 text-[10px] font-bold text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30">
-                              <Calendar size={10} /> {row.original_delivery_date}
+                              <Calendar size={10} /> {isDbMode ? row._display_date : row.original_delivery_date}
                             </span>
                           </td>
-                          <td className="px-5 py-4"><div className="flex items-center gap-2 text-xs font-mono text-slate-500">{row.delivery_uid || "N/A"}</div></td>
+                          {!isDbMode && <td className="px-5 py-4"><div className="flex items-center gap-2 text-xs font-mono text-slate-500">{row.delivery_uid || "--"}</div></td>}
                           <td className="px-5 py-4"><div className="flex items-center gap-2 text-sm font-black dark:text-white"><Hash size={14} className="text-slate-400"/> {row.tracking_id || group.id}</div></td>
                           <td className="px-5 py-4"><div className="flex items-center gap-2 text-xs font-medium dark:text-slate-200 truncate max-w-[200px]" title={row.client_account || group.project_name}><FolderGit2 size={12} className="text-blue-500 shrink-0"/> {row.client_account || group.project_name || "Unknown"}</div></td>
                           <td className="px-5 py-4">
@@ -1044,7 +1064,7 @@ const QcHistoryDashboard = () => {
                         {/* EXPANDED HISTORY ROWS, CHART & MATRIX */}
                         {expandedGroups[toggleId] && (
                           <tr className="bg-slate-50/50 dark:bg-[#0B0F1A]/80 shadow-inner">
-                            <td colSpan={10} className="p-0 border-b border-slate-200 dark:border-slate-800">
+                            <td colSpan={isDbMode ? 9 : 10} className="p-0 border-b border-slate-200 dark:border-slate-800">
                               <div className="py-6 px-4 sm:px-8 border-l-4 border-indigo-500 ml-5 my-2">
                                 
                                 <div className="flex justify-between items-center mb-6 border-b border-slate-200 dark:border-slate-700/60 pb-4">
@@ -1096,7 +1116,7 @@ const QcHistoryDashboard = () => {
                                     </div>
                                   ))}
                                   
-                                  {dataSource !== "db" && (
+                                  {!isDbMode && (
                                     <div className="flex items-center gap-4 pl-4 pt-2">
                                       <div className="w-16 flex justify-end text-slate-300 dark:text-slate-600">
                                         <ArrowRight size={16}/>

@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { UploadCloud, Loader, Download } from "lucide-react";
-import { useRunMmBsaQcMutation } from "@/state/api";
+import { UploadCloud, Loader, Download, Fingerprint } from "lucide-react";
+import { useRunMmExclusiveQcMutation } from "@/state/api";
 
 const QC_CHECKS = [
   { id: "duplicate_aid_final", title: "Duplicate AID Check" },
@@ -32,13 +32,18 @@ export default function Page() {
   const [prevFile, setPrevFile] = useState<File | null>(null);
   const [bsrFile, setBsrFile] = useState<File | null>(null);
 
+  // 🎯 NEW: Tracking Details State
+  const [roscoId, setRoscoId] = useState("");
+  const [deliveryId, setDeliveryId] = useState("");
+  const [userName, setUserName] = useState("");
+
   const [selectedChecks, setSelectedChecks] = useState<string[]>([]);
   const [btThreshold, setBtThreshold] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
 
-  const [runMmBsaQc, { isLoading }] = useRunMmBsaQcMutation();
+  const [runMmExclusiveQc, { isLoading }] = useRunMmExclusiveQcMutation();
 
   const allSelected = selectedChecks.length === QC_CHECKS.length;
 
@@ -62,6 +67,11 @@ export default function Page() {
     formData.append("adapt_file", dpmmFile); // same backend param
     formData.append("selected_checks", JSON.stringify(selectedChecks));
 
+    // 🎯 NEW: Append Tracking Info
+    formData.append("rosco_id", roscoId);
+    formData.append("destination_id", deliveryId);
+    formData.append("user_name", userName);
+
     if (roscoFile) formData.append("rosco_file", roscoFile);
     if (fixtureFile) formData.append("fixture_file", fixtureFile);
     if (prevFile) formData.append("previous_delivery_file", prevFile);
@@ -72,7 +82,7 @@ export default function Page() {
     if (endDate) formData.append("end_date", endDate);
 
     try {
-      const blob = await runMmBsaQc(formData).unwrap();
+      const blob = await runMmExclusiveQc(formData).unwrap();
       const url = window.URL.createObjectURL(blob);
       setDownloadUrl(url);
     } catch (err: any) {
@@ -133,7 +143,7 @@ export default function Page() {
                           e.preventDefault();
                           item.set(null);
                         }}
-                        className="text-[10px] text-red-500"
+                        className="text-[10px] text-red-500 hover:underline"
                       >
                         Remove
                       </button>
@@ -178,9 +188,44 @@ export default function Page() {
               ))}
             </div>
           </div>
+        </div>
+
+        {/* RIGHT PANEL */}
+        <div className="flex flex-col gap-6">
+
+          {/* 🎯 NEW: TRACKING DETAILS FOR ACTION CENTER */}
+          <div className="rounded-2xl p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-sm">
+            <h3 className="text-sm font-semibold mb-4 flex items-center gap-2">
+              <Fingerprint size={16} className="text-purple-500" /> Pipeline Tracking
+            </h3>
+
+            <div className="flex flex-col gap-3">
+              <input
+                type="text"
+                value={roscoId}
+                onChange={(e) => setRoscoId(e.target.value)}
+                placeholder="Rosco ID"
+                className="w-full border rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800 dark:border-slate-700"
+              />
+              <input
+                type="text"
+                value={deliveryId}
+                onChange={(e) => setDeliveryId(e.target.value)}
+                placeholder="Delivery ID"
+                className="w-full border rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800 dark:border-slate-700"
+              />
+              <input
+                type="text"
+                value={userName}
+                onChange={(e) => setUserName(e.target.value)}
+                placeholder="User Name"
+                className="w-full border rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800 dark:border-slate-700"
+              />
+            </div>
+          </div>
 
           {/* MONITORING */}
-          <div className="rounded-2xl p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700">
+          <div className="rounded-2xl p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-sm">
 
             <h3 className="text-sm font-semibold mb-4">
               Monitoring
@@ -191,13 +236,13 @@ export default function Page() {
                 type="date"
                 value={startDate}
                 onChange={(e) => setStartDate(e.target.value)}
-                className="w-full border rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800"
+                className="w-full border rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800 dark:border-slate-700 dark:scheme-dark"
               />
               <input
                 type="date"
                 value={endDate}
                 onChange={(e) => setEndDate(e.target.value)}
-                className="w-full border rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800"
+                className="w-full border rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800 dark:border-slate-700 dark:scheme-dark"
               />
             </div>
 
@@ -206,36 +251,36 @@ export default function Page() {
               placeholder="BT Threshold"
               value={btThreshold}
               onChange={(e) => setBtThreshold(e.target.value)}
-              className="w-full border rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800"
+              className="w-full border rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800 dark:border-slate-700"
             />
           </div>
-        </div>
 
-        {/* RIGHT */}
-        <div className="rounded-2xl p-6 flex flex-col gap-4 justify-center bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-sm">
+          {/* RUN BUTTON */}
+          <div className="rounded-2xl p-6 flex flex-col gap-4 justify-center bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-sm">
 
-          <button
-            onClick={runChecks}
-            disabled={!ready || isLoading}
-            className="w-full py-3 rounded-xl font-semibold text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 shadow-md flex items-center justify-center gap-2"
-          >
-            {isLoading ? <Loader className="animate-spin" size={16} /> : <UploadCloud size={16} />}
-            {isLoading ? "Running..." : "Run OPS Checks"}
-          </button>
-
-          {downloadUrl && (
             <button
-              onClick={() => {
-                const a = document.createElement("a");
-                a.href = downloadUrl;
-                a.download = "OPS_Output.xlsx";
-                a.click();
-              }}
-              className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg flex justify-center gap-2"
+              onClick={runChecks}
+              disabled={!ready || isLoading}
+              className="w-full py-3 rounded-xl font-semibold text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 shadow-md flex items-center justify-center gap-2"
             >
-              <Download size={14} /> Download Output
+              {isLoading ? <Loader className="animate-spin" size={16} /> : <UploadCloud size={16} />}
+              {isLoading ? "Running..." : "Run OPS Checks"}
             </button>
-          )}
+
+            {downloadUrl && (
+              <button
+                onClick={() => {
+                  const a = document.createElement("a");
+                  a.href = downloadUrl;
+                  a.download = "OPS_Output.xlsx";
+                  a.click();
+                }}
+                className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg flex justify-center gap-2"
+              >
+                <Download size={14} /> Download Output
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

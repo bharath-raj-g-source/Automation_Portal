@@ -375,6 +375,15 @@ export const api = createApi({
       }),
     }),
 
+    runMmExclusiveQc: build.mutation<Blob, FormData>({
+      query: (formData) => ({
+        url: "/qc/run-mm-exclusive-qc", // Hits your new Python endpoint!
+        method: "POST",
+        body: formData,
+        responseHandler: (response) => response.blob(),
+      }),
+    }),
+
     downloadFixtureTemplate: build.query<Blob, void>({
       query: () => ({
         url: "qc/download-fixture-template", // Ensure this matches your router prefix
@@ -530,6 +539,7 @@ export const {
   useGetAutomationHubQuery,
   useProcessExcelLedgerMutation,
   useGetWebsiteUpdatesQuery,
+  useRunMmExclusiveQcMutation
   
 
 

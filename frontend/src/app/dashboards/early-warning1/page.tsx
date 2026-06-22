@@ -322,7 +322,7 @@ const EarlyWarningPage1 = () => {
                   </button>
                 )}
                 <h1 className="text-lg font-bold tracking-tight text-slate-800 dark:text-white flex items-center gap-2">
-                  <Layers className="text-blue-600 dark:text-blue-500 shrink-0" size={20}/> Early Warning Dashboard
+                  <Layers className="text-blue-600 dark:text-blue-500 shrink-0" size={20}/> BSR Visualization 
                 </h1>
               </div>
               

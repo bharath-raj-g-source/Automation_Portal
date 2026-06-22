@@ -410,8 +410,14 @@ const Sidebar = () => {
             <>
               <SidebarLink
                 icon={NotebookPen}
-                label="Rates (International)"
+                label="Physical Rates"
                 href="/priority/medium"
+              />
+  
+              <SidebarLink
+                icon={NotebookPen}
+                label="BSR Rates "
+                href="/priority/intl-rates"
               />
 
               <SidebarLink
