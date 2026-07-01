@@ -201,6 +201,33 @@ export interface AutomationHubResponse {
   }>;
 }
 
+
+export interface Segments {
+  translations: string[];
+  acronyms: string[];
+  shows: string[];
+  teams: string[];
+  years: string[];
+}
+
+export interface GeneratedMetadataResponse {
+  status: string;
+  league: string;
+  data: {
+    translations: string[];
+    acronyms: string[];
+    shows: string[];
+    teams: string[];
+    years: string[];
+  };
+}
+
+export interface GenerateMetadataArgs {
+  leagueName: string;
+  year: string;
+  fixture_context?: string; // 🎯 Add the optional property type here
+}
+
 // --- API DEFINITION ---
 
 export const api = createApi({
@@ -498,7 +525,29 @@ export const api = createApi({
     getWebsiteUpdates: build.query<any, void>({
       query: () => "/qc/updates/website",
     }),
+
+    // 💡 NEW AI GENERATOR ENDPOINT
+    generateLeagueMetadata: build.query<any, GenerateMetadataArgs>({ // 🎯 Apply interface type here
+      query: ({ leagueName, year, fixture_context }) => ({
+        url: `qc/metadata/generate/${encodeURIComponent(leagueName)}/${year}`,
+        method: "POST", // 🎯 Ensure this matches your backend update
+        body: { fixture_context }, // Send the payload text body securely
+      }),
+    }),
+    segregateDataset: build.mutation<any, { keywords: any; raw_dataset: any[] }>({
+      query: (payload) => ({
+        url: "qc/dataset/segregate",
+        method: "POST",
+        body: payload,
+      }),
+    }),
+    
+    generateDynamicFixtures: build.query<{ status: string; total: number; fixtures: any[] }, { leagueName: string; year: string }>({
+      query: ({ leagueName, year }) => `/qc/metadata/fixtures/${encodeURIComponent(leagueName)}/${encodeURIComponent(year)}`,
+    }),
   }),
+
+  
     
       
 
@@ -539,8 +588,11 @@ export const {
   useGetAutomationHubQuery,
   useProcessExcelLedgerMutation,
   useGetWebsiteUpdatesQuery,
-  useRunMmExclusiveQcMutation
-  
+  useRunMmExclusiveQcMutation,
+  //ai endpoint
+  useLazyGenerateLeagueMetadataQuery,
+  useSegregateDatasetMutation,
+  useLazyGenerateDynamicFixturesQuery,
 
 
 

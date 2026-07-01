@@ -247,7 +247,8 @@ import {
   ClipboardList,
   ClipboardPen,
   CircleGauge,
-  Activity
+  Activity,
+  CalendarSearch,
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
@@ -391,6 +392,38 @@ const Sidebar = () => {
                 label="Aus-NZ Media"
                 href="/app_aus_nz_requirement"
               />
+            </>
+          )}
+
+             {/* --- BSR Tools --- */}
+          <button
+            onClick={() => setShowPriority((prev) => !prev)}
+            className="flex w-full items-center justify-between px-8 py-3 text-gray-500"
+          >
+            <span className="">BSR Tools</span>
+            {showPriority ? (
+              <ChevronUp className="h-5 w-5" />
+            ) : (
+              <ChevronDown className="h-5 w-5" />
+            )}
+          </button>
+          {showPriority && (
+            <>
+              <SidebarLink
+                icon={CalendarSearch}
+                label="Raw Data Research"
+                href="/tools"
+              />
+              {/* <SidebarLink
+                icon={ListCheckIcon}
+                label="E2E Checks"
+                href="/priority/mm-bsa"
+              />
+              <SidebarLink
+                icon={ListCheckIcon}
+                label="Aus-NZ Media"
+                href="/app_aus_nz_requirement"
+              /> */}
             </>
           )}
 

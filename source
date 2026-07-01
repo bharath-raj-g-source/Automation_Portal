@@ -1,0 +1,8 @@
+      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND
+       80       1      80      14792  cons0    1231447   Jun 22 /usr/bin/bash
+      411       1     411      27064  cons2    1231447   Jun 22 /usr/bin/bash
+      771     763     763      17432  cons1    1231447 17:14:38 /c/Program Files/nodejs/node
+      299       1     299      24580  cons1    1231447   Jun 22 /usr/bin/bash
+      763     299     763       5968  cons1    1231447 17:14:36 /usr/bin/bash
+      776      80     776      31816  cons0    1231447 17:14:43 /c/Users/BHRAJG2501/Desktop/Automation_Portal/Automation_Portal/src/saas_backend/.venv/Scripts/uvicorn
+      795     411     795      15336  cons2    1231447 17:23:20 /usr/bin/PS
